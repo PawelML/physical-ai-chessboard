@@ -17,6 +17,7 @@ class _Bucket:
     wins: int = 0
     draws: int = 0
     losses: int = 0
+    unfinished: int = 0
     cpls: list[int] = field(default_factory=list)
     blunders: int = 0
     mistakes: int = 0
@@ -93,9 +94,11 @@ async def _accumulate_game(
         bucket.wins += 1
     elif outcome == "loss":
         bucket.losses += 1
-    else:
+    elif outcome == "draw":
         bucket.draws += 1
-    if game.termination_reason == "forfeit_invalid":
+    elif outcome == "unfinished":
+        bucket.unfinished += 1
+    if game.termination_reason == "forfeit_invalid" and outcome == "loss":
         bucket.forfeit_invalid_count += 1
 
     moves = (
@@ -157,6 +160,7 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
         wins=bucket.wins,
         draws=bucket.draws,
         losses=bucket.losses,
+        unfinished=bucket.unfinished,
         avg_cpl=_avg(bucket.cpls),
         blunders=bucket.blunders,
         mistakes=bucket.mistakes,
@@ -171,7 +175,9 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
 
 
 def _outcome_for_color(result: str, color: str) -> str:
-    if result == "1/2-1/2" or result == "*":
+    if result == "*":
+        return "unfinished"
+    if result == "1/2-1/2":
         return "draw"
     if result == "1-0":
         return "win" if color == "white" else "loss"

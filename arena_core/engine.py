@@ -97,7 +97,6 @@ class GameResult:
     termination_reason: str
     pgn: str
     plies: int
-    attempt_log: list[str]
 
 
 class ArenaGame:
@@ -143,21 +142,28 @@ class ArenaGame:
         await session.flush()
 
         termination_reason = "unknown"
-        while not self.board.is_game_over(claim_draw=True):
-            played_plies = self.board.ply() - self._initial_ply
-            if self.max_plies is not None and played_plies >= self.max_plies:
-                termination_reason = "max_plies"
-                break
-            move_source = self.white if self.board.turn == chess.WHITE else self.black
-            accepted = await self._play_one_ply(session, game_row.id, move_source)
-            if not accepted:
-                termination_reason = "forfeit_invalid"
-                break
-        else:
-            termination_reason = self._termination_reason()
+        try:
+            while not self.board.is_game_over(claim_draw=True):
+                played_plies = self.board.ply() - self._initial_ply
+                if self.max_plies is not None and played_plies >= self.max_plies:
+                    termination_reason = "max_plies"
+                    break
+                move_source = self.white if self.board.turn == chess.WHITE else self.black
+                accepted = await self._play_one_ply(session, game_row.id, move_source)
+                if not accepted:
+                    termination_reason = "forfeit_invalid"
+                    break
+            else:
+                termination_reason = self._termination_reason()
+        finally:
+            _close_if_present(self.white)
+            if self.black is not self.white:
+                _close_if_present(self.black)
 
         if termination_reason == "max_plies":
             game_row.result = "*"
+        elif termination_reason == "forfeit_invalid":
+            game_row.result = "0-1" if self.board.turn == chess.WHITE else "1-0"
         else:
             game_row.result = self.board.result(claim_draw=True)
         game_row.termination_reason = termination_reason
@@ -170,8 +176,7 @@ class ArenaGame:
             result=game_row.result,
             termination_reason=termination_reason,
             pgn=game_row.pgn,
-            plies=self.board.ply(),
-            attempt_log=[],
+            plies=self.board.ply() - self._initial_ply,
         )
 
     async def _play_one_ply(
@@ -389,9 +394,13 @@ class ArenaGame:
             game.headers["SetUp"] = "1"
             game.headers["FEN"] = self._initial_fen
         node: chess.pgn.GameNode = game
-        replay = chess.Board(self._initial_fen)
         for uci in self._uci_history:
             move = chess.Move.from_uci(uci)
             node = node.add_variation(move)
-            replay.push(move)
         return str(game)
+
+
+def _close_if_present(source: object) -> None:
+    close = getattr(source, "close", None)
+    if callable(close):
+        close()

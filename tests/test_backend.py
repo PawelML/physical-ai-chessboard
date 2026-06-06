@@ -6,9 +6,15 @@ from arena_core.annotations import annotate_game
 from arena_core.config import Settings
 from arena_core.engine import ArenaGame, RandomMoveSource, StaticMoveSource
 from arena_core.leaderboards import rebuild_game_summaries
+from arena_core.llm.base import LLMResponse, LLMService
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.tournaments import TournamentConfig, run_tournament
 from backend.main import _game_stream_payload, create_app
+
+
+class StubLLMService(LLMService):
+    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+        return LLMResponse(content="backend commentary")
 
 
 async def test_backend_lists_and_fetches_game(tmp_path: Path) -> None:
@@ -24,7 +30,13 @@ async def test_backend_lists_and_fetches_game(tmp_path: Path) -> None:
                 settings=Settings(max_retries=0),
                 max_plies=1,
             ).run(session)
-            await annotate_game(session, game_id=result.game_id, persona="technician")
+            await annotate_game(
+                session,
+                game_id=result.game_id,
+                persona="technician",
+                llm_service=StubLLMService(),
+                model="stub-model",
+            )
 
     client = TestClient(create_app(Settings(database_url=db_url)))
     list_response = client.get("/games")

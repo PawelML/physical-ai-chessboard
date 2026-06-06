@@ -7,8 +7,10 @@ from sqlalchemy import func, select
 from arena_core.config import Settings
 from arena_core.engine import ArenaGame, RandomMoveSource, StaticMoveSource
 from arena_core.evaluators.stockfish import EngineEvaluation
+from arena_core.leaderboards import _outcome_for_color, rebuild_game_summaries
+from arena_core.persistence import models
 from arena_core.persistence.database import create_session_factory, init_db
-from arena_core.persistence.models import Attempt, Move, TokenUsage
+from arena_core.persistence.models import Attempt, GameSummary, Move, TokenUsage
 from arena_core.persistence.models import EngineEvaluation as EngineEvaluationRow
 
 
@@ -85,6 +87,59 @@ async def test_invalid_attempts_are_persisted_and_retried(tmp_path: Path) -> Non
     assert attempts[0].error_type == "malformed_json"
     assert attempts[1].error_type == "illegal_move"
     assert attempts[2].move_id == move.id
+
+
+@pytest.mark.integration
+async def test_forfeit_by_invalid_scores_loss_for_forfeiting_side(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+    white = StaticMoveSource(['{"move":"e2e5"}', '{"move":"e2e5"}'])
+
+    async with session_factory() as session:
+        async with session.begin():
+            run = models.BenchmarkRun(
+                name="invalid-forfeit",
+                config_hash="f" * 64,
+            )
+            session.add(run)
+            await session.flush()
+            white_participant = models.RunParticipant(
+                run_id=run.id,
+                opponent_type="model",
+                color_policy="white",
+                display_name="illegal-white",
+            )
+            black_participant = models.RunParticipant(
+                run_id=run.id,
+                opponent_type="random",
+                color_policy="black",
+                display_name="random-black",
+            )
+            session.add_all([white_participant, black_participant])
+            await session.flush()
+            result = await ArenaGame(
+                white=white,
+                black=RandomMoveSource(),
+                settings=Settings(max_retries=1),
+                run_id=run.id,
+                white_participant_id=white_participant.id,
+                black_participant_id=black_participant.id,
+            ).run(session)
+            await rebuild_game_summaries(session, run_id=run.id)
+
+    async with session_factory() as session:
+        summaries = (await session.execute(select(GameSummary))).scalars().all()
+
+    assert result.termination_reason == "forfeit_invalid"
+    assert result.result == "0-1"
+    assert _outcome_for_color(result.result, "white") == "loss"
+    assert _outcome_for_color(result.result, "black") == "win"
+    by_color = {summary.color: summary for summary in summaries}
+    assert by_color["white"].losses == 1
+    assert by_color["white"].forfeit_invalid_count == 1
+    assert by_color["black"].wins == 1
+    assert by_color["black"].forfeit_invalid_count == 0
 
 
 @pytest.mark.integration

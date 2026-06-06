@@ -163,7 +163,7 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
           <div className="comparison-head">
             <span>Run</span>
             <span>Games</span>
-            <span>W-D-L</span>
+            <span>W-D-L-U</span>
             <span>Avg CPL</span>
             <span>Illegal</span>
             <span>Retries</span>
@@ -175,7 +175,7 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
               <span>{row.run_id}</span>
               <span>{row.games_played}</span>
               <span>
-                {row.wins}-{row.draws}-{row.losses}
+                {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
               <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
@@ -589,7 +589,7 @@ function Leaderboard({
             <span>Participant</span>
             <span>Mode</span>
             <span>Color</span>
-            <span>W-D-L</span>
+            <span>W-D-L-U</span>
             <span>Avg CPL</span>
             <span>Illegal</span>
             <span>Retries</span>
@@ -604,7 +604,7 @@ function Leaderboard({
               </span>
               <span>{row.color}</span>
               <span>
-                {row.wins}-{row.draws}-{row.losses}
+                {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
               <span>{(row.illegal_rate * 100).toFixed(1)}%</span>

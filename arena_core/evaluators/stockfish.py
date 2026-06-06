@@ -36,17 +36,39 @@ class StockfishEvaluator:
         self.threads = threads
         self.hash_mb = hash_mb
         self.engine_name = "stockfish"
+        self._engine: chess.engine.SimpleEngine | None = None
+        self._version: str | None = None
+
+    def __enter__(self) -> "StockfishEvaluator":
+        self._ensure_engine()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._engine is not None:
+            try:
+                self._engine.quit()
+            finally:
+                self._engine = None
+
+    @property
+    def version(self) -> str:
+        engine = self._ensure_engine()
+        if self._version is None:
+            self._version = self._engine_version(engine)
+        return self._version
 
     def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
-        with chess.engine.SimpleEngine.popen_uci(self.binary_path) as engine:
-            engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
-            version = self._engine_version(engine)
-            limit = chess.engine.Limit(nodes=self.nodes)
-            mover = board_before.turn
-            before_info = engine.analyse(board_before, limit)
-            board_after = board_before.copy(stack=False)
-            board_after.push(move)
-            after_info = engine.analyse(board_after, limit)
+        engine = self._ensure_engine()
+        version = self.version
+        limit = chess.engine.Limit(nodes=self.nodes)
+        mover = board_before.turn
+        before_info = engine.analyse(board_before, limit)
+        board_after = board_before.copy(stack=False)
+        board_after.push(move)
+        after_info = engine.analyse(board_after, limit)
 
         before_cp, mate_before = _score_parts(before_info["score"].pov(mover))
         after_cp, mate_after = _score_parts(after_info["score"].pov(mover))
@@ -73,6 +95,18 @@ class StockfishEvaluator:
             return f"{name} ({author})"
         return name or "unknown"
 
+    def _ensure_engine(self) -> chess.engine.SimpleEngine:
+        if self._engine is None:
+            self._engine = chess.engine.SimpleEngine.popen_uci(self.binary_path)
+            self._engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
+        return self._engine
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class StockfishMoveSource:
     name = "stockfish"
@@ -96,19 +130,36 @@ class StockfishMoveSource:
         self.skill = skill
         self.uci_limit_strength = uci_limit_strength
         self.target_elo = target_elo
+        self._engine: chess.engine.SimpleEngine | None = None
+        self._version: str | None = None
+
+    def __enter__(self) -> "StockfishMoveSource":
+        self._ensure_engine()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._engine is not None:
+            try:
+                self._engine.quit()
+            finally:
+                self._engine = None
+
+    @property
+    def version(self) -> str:
+        engine = self._ensure_engine()
+        if self._version is None:
+            name = engine.id.get("name")
+            author = engine.id.get("author")
+            self._version = f"{name} ({author})" if name and author else name or "unknown"
+        return self._version
 
     async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
         started = time.perf_counter()
-        with chess.engine.SimpleEngine.popen_uci(self.binary_path) as engine:
-            options: dict[str, int | bool] = {"Threads": self.threads, "Hash": self.hash_mb}
-            if self.skill is not None:
-                options["Skill Level"] = self.skill
-            if self.uci_limit_strength is not None:
-                options["UCI_LimitStrength"] = self.uci_limit_strength
-            if self.target_elo is not None:
-                options["UCI_Elo"] = self.target_elo
-            engine.configure(options)
-            result = engine.play(board, chess.engine.Limit(nodes=self.nodes))
+        engine = self._ensure_engine()
+        result = engine.play(board, chess.engine.Limit(nodes=self.nodes))
         if result.move is None:
             raise RuntimeError("Stockfish did not return a move")
         latency_ms = (time.perf_counter() - started) * 1000
@@ -117,6 +168,25 @@ class StockfishMoveSource:
             source=self.source_type,
             latency_ms=latency_ms,
         )
+
+    def _ensure_engine(self) -> chess.engine.SimpleEngine:
+        if self._engine is None:
+            self._engine = chess.engine.SimpleEngine.popen_uci(self.binary_path)
+            options: dict[str, int | bool] = {"Threads": self.threads, "Hash": self.hash_mb}
+            if self.skill is not None:
+                options["Skill Level"] = self.skill
+            if self.uci_limit_strength is not None:
+                options["UCI_LimitStrength"] = self.uci_limit_strength
+            if self.target_elo is not None:
+                options["UCI_Elo"] = self.target_elo
+            self._engine.configure(options)
+        return self._engine
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def _score_parts(score: chess.engine.Score) -> tuple[int | None, int | None]:

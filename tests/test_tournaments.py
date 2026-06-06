@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import chess
 import pytest
 from sqlalchemy import func, select
 
 from arena_core.config import Settings
 from arena_core.engine import RandomMoveSource
+from arena_core.evaluators.stockfish import EngineEvaluation
 from arena_core.leaderboards import rebuild_game_summaries
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.persistence.models import (
@@ -18,6 +20,13 @@ from arena_core.persistence.models import (
     RunParticipant,
 )
 from arena_core.tournaments import TournamentConfig, board_from_move_sequence, run_tournament
+
+
+class FakeVersionedEvaluator:
+    version = "Fakefish 1.0"
+
+    def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
+        raise NotImplementedError
 
 
 @pytest.mark.integration
@@ -106,6 +115,34 @@ async def test_stockfish_participant_metadata_is_captured_without_playing(tmp_pa
     assert stockfish.stockfish_skill == 3
     assert stockfish.uci_limit_strength is True
     assert stockfish.target_elo == 1400
+
+
+@pytest.mark.integration
+async def test_tournament_records_evaluator_stockfish_version(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+
+    async with session_factory() as session:
+        async with session.begin():
+            result = await run_tournament(
+                session=session,
+                config=TournamentConfig(
+                    name="stockfish-version",
+                    competitor_a="random",
+                    competitor_b="random",
+                    max_plies=0,
+                ),
+                settings=Settings(max_retries=0),
+                source_factory=lambda _name: RandomMoveSource(),
+                evaluator=FakeVersionedEvaluator(),
+            )
+
+    async with session_factory() as session:
+        run = await session.get(BenchmarkRun, result.run_id)
+
+    assert run is not None
+    assert run.stockfish_version == "Fakefish 1.0"
 
 
 @pytest.mark.integration
@@ -239,5 +276,7 @@ async def test_rebuild_game_summaries_materializes_leaderboard_rows(tmp_path: Pa
     assert len(summaries) == 4
     assert sum(summary.games_played for summary in summaries) == 8
     assert {summary.games_played for summary in summaries} == {2}
+    assert {summary.unfinished for summary in summaries} == {2}
+    assert all(summary.draws == 0 for summary in summaries)
     assert all(summary.legality_mode == "open" for summary in summaries)
     assert sum(summary.total_tokens for summary in summaries) > 0

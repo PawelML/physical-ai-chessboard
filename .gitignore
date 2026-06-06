@@ -14,3 +14,4 @@ frontend/node_modules/
 .playwright-mcp/
 arena-replay-smoke.png
 vendor/stockfish/download/*.deb
+vendor/stockfish/root/

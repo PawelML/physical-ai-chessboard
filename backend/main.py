@@ -129,6 +129,7 @@ class LeaderboardRow(BaseModel):
     wins: int
     draws: int
     losses: int
+    unfinished: int
     avg_cpl: float | None
     blunders: int
     mistakes: int
@@ -157,6 +158,7 @@ class RunComparisonRow(BaseModel):
     wins: int
     draws: int
     losses: int
+    unfinished: int
     avg_cpl: float | None
     illegal_rate: float
     malformed_rate: float
@@ -313,6 +315,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     wins=summary.wins,
                     draws=summary.draws,
                     losses=summary.losses,
+                    unfinished=summary.unfinished,
                     avg_cpl=summary.avg_cpl,
                     blunders=summary.blunders,
                     mistakes=summary.mistakes,
@@ -552,6 +555,7 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
     wins = sum(row.wins for row in rows)
     draws = sum(row.draws for row in rows)
     losses = sum(row.losses for row in rows)
+    unfinished = sum(row.unfinished for row in rows)
     total_tokens = sum(row.total_tokens for row in rows)
     return RunComparisonRow(
         run_id=run_id,
@@ -559,6 +563,7 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
         wins=wins,
         draws=draws,
         losses=losses,
+        unfinished=unfinished,
         avg_cpl=_weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
         illegal_rate=_weighted_average([(row.illegal_rate, row.games_played) for row in rows]),
         malformed_rate=_weighted_average([(row.malformed_rate, row.games_played) for row in rows]),

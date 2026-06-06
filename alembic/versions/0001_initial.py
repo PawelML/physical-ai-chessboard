@@ -224,6 +224,7 @@ def upgrade() -> None:
         sa.Column("wins", sa.Integer(), nullable=False),
         sa.Column("draws", sa.Integer(), nullable=False),
         sa.Column("losses", sa.Integer(), nullable=False),
+        sa.Column("unfinished", sa.Integer(), nullable=False),
         sa.Column("avg_cpl", sa.Float(), nullable=True),
         sa.Column("blunders", sa.Integer(), nullable=False),
         sa.Column("mistakes", sa.Integer(), nullable=False),

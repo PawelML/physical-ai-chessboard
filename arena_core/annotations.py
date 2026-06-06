@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from arena_core.llm.base import LLMService
 from arena_core.persistence import models
 from arena_core.persistence.repositories import ensure_prompt, text_hash
 from arena_core.prompts import LegalityMode, build_reasoning_prompt
@@ -13,6 +14,8 @@ async def annotate_game(
     *,
     game_id: int,
     persona: str,
+    llm_service: LLMService,
+    model: str,
     legality_mode: LegalityMode = "open",
 ) -> int:
     if persona not in PERSONAS:
@@ -49,7 +52,8 @@ async def annotate_game(
             legality_mode=legality_mode,
         )
         prompt_row = await ensure_prompt(session, prompt)
-        commentary = _commentary(move, persona, evaluation_label)
+        response = await llm_service.complete(model=model, prompt=prompt.text)
+        commentary = response.content.strip()
         session.add(
             models.MoveAnnotation(
                 move_id=move.id,
@@ -58,23 +62,9 @@ async def annotate_game(
                 commentary=commentary,
                 raw_prompt_hash=text_hash(prompt.text),
                 raw_prompt=prompt.text,
-                raw_response=commentary,
+                raw_response=response.content,
             )
         )
         count += 1
     await session.flush()
     return count
-
-
-def _commentary(move: models.Move, persona: str, evaluation_label: str) -> str:
-    prefix = {
-        "aggressive": "Presses for activity",
-        "positional": "Keeps the structure in view",
-        "defensive": "Prioritizes stability",
-        "risk-taking": "Accepts practical imbalance",
-        "technician": "Focuses on conversion details",
-    }[persona]
-    return (
-        f"{prefix}: {move.accepted_san} ({move.accepted_uci}) was recorded as "
-        f"{evaluation_label}; retries used: {move.retries_used}."
-    )

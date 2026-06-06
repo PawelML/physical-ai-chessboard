@@ -91,6 +91,7 @@ export type LeaderboardRow = {
   wins: number;
   draws: number;
   losses: number;
+  unfinished: number;
   avg_cpl: number | null;
   blunders: number;
   mistakes: number;
@@ -126,6 +127,7 @@ export type RunComparisonRow = {
   wins: number;
   draws: number;
   losses: number;
+  unfinished: number;
   avg_cpl: number | null;
   illegal_rate: number;
   malformed_rate: number;

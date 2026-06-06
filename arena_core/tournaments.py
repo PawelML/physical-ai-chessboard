@@ -95,7 +95,7 @@ async def run_tournament(
         config_hash=config_hash,
         git_commit=_git_commit(),
         seed=config.seed,
-        stockfish_version=None,
+        stockfish_version=_stockfish_version(evaluator),
         stockfish_options=_stockfish_options(settings),
         prompt_id=prompt_row.id,
         opening_suite_id=suite.id,
@@ -127,26 +127,29 @@ async def run_tournament(
     )
 
     game_ids: list[int] = []
-    for line in opening_lines:
-        for white_name, black_name, white_participant, black_participant in (
-            (config.competitor_a, config.competitor_b, participant_a, participant_b),
-            (config.competitor_b, config.competitor_a, participant_b, participant_a),
-        ):
-            board = board_from_move_sequence(line.move_sequence or "")
-            result = await ArenaGame(
-                white=source_factory(white_name),
-                black=source_factory(black_name),
-                settings=settings,
-                legality_mode=config.legality_mode,
-                max_plies=config.max_plies,
-                evaluator=evaluator,
-                initial_board=board,
-                run_id=run.id,
-                white_participant_id=white_participant.id,
-                black_participant_id=black_participant.id,
-                opening_line_id=line.id,
-            ).run(session)
-            game_ids.append(result.game_id)
+    try:
+        for line in opening_lines:
+            for white_name, black_name, white_participant, black_participant in (
+                (config.competitor_a, config.competitor_b, participant_a, participant_b),
+                (config.competitor_b, config.competitor_a, participant_b, participant_a),
+            ):
+                board = board_from_move_sequence(line.move_sequence or "")
+                result = await ArenaGame(
+                    white=source_factory(white_name),
+                    black=source_factory(black_name),
+                    settings=settings,
+                    legality_mode=config.legality_mode,
+                    max_plies=config.max_plies,
+                    evaluator=evaluator,
+                    initial_board=board,
+                    run_id=run.id,
+                    white_participant_id=white_participant.id,
+                    black_participant_id=black_participant.id,
+                    opening_line_id=line.id,
+                ).run(session)
+                game_ids.append(result.game_id)
+    finally:
+        _close_if_present(evaluator)
     return TournamentResult(run_id=run.id, config_hash=config_hash, game_ids=game_ids)
 
 
@@ -397,6 +400,19 @@ def _stockfish_options(settings: Settings) -> dict[str, object] | None:
         "limit_strength": settings.stockfish_limit_strength,
         "target_elo": settings.stockfish_target_elo,
     }
+
+
+def _stockfish_version(evaluator: MoveEvaluator | None) -> str | None:
+    if evaluator is None:
+        return None
+    version = getattr(evaluator, "version", None)
+    return version if isinstance(version, str) else None
+
+
+def _close_if_present(item: object) -> None:
+    close = getattr(item, "close", None)
+    if callable(close):
+        close()
 
 
 def _git_commit() -> str | None:

@@ -52,7 +52,7 @@ def play(
         raise typer.BadParameter("legality-mode must be open or constrained")
     settings = get_settings()
     effective_db_url = db_url or settings.database_url
-    result = asyncio.run(
+    result, attempt_log = asyncio.run(
         _play_async(
             settings=settings,
             db_url=effective_db_url,
@@ -66,7 +66,7 @@ def play(
     typer.echo(f"Game {result.game_id}: {result.result} ({result.termination_reason})")
     typer.echo(result.pgn)
     typer.echo("\nAttempt log:")
-    for line in result.attempt_log:
+    for line in attempt_log:
         typer.echo(line)
 
 
@@ -138,10 +138,13 @@ def rebuild_summaries(
 def annotate_game_command(
     game_id: Annotated[int, typer.Argument(help="Persisted game id to annotate.")],
     persona: Annotated[str, typer.Option("--persona", help="Persona name.")] = "technician",
+    model: Annotated[str, typer.Option("--model", help="Annotation model name.")] = "qwen3.5:9b",
     db_url: Annotated[str | None, typer.Option("--db-url", help="SQLAlchemy async DB URL.")] = None,
 ) -> None:
     settings = get_settings()
-    count = asyncio.run(_annotate_game_async(db_url or settings.database_url, game_id, persona))
+    count = asyncio.run(
+        _annotate_game_async(db_url or settings.database_url, game_id, persona, model, settings)
+    )
     typer.echo(f"Annotated {count} moves for game {game_id} with persona {persona}")
 
 
@@ -172,7 +175,7 @@ async def _play_async(
     legality_mode: str,
     max_plies: int | None,
     stockfish_path: str | None,
-) -> GameResult:
+) -> tuple[GameResult, list[str]]:
     await create_tables(db_url)
     session_factory = create_session_factory(db_url)
     white = _source_from_name(white_name, settings)
@@ -188,35 +191,39 @@ async def _play_async(
         if effective_stockfish_path
         else None
     )
-    async with session_factory() as session:
-        async with session.begin():
-            game = ArenaGame(
-                white=white,
-                black=black,
-                settings=settings,
-                legality_mode=cast("LegalityMode", legality_mode),
-                max_plies=max_plies,
-                evaluator=evaluator,
-            )
-            result = await game.run(session)
+    try:
+        async with session_factory() as session:
+            async with session.begin():
+                game = ArenaGame(
+                    white=white,
+                    black=black,
+                    settings=settings,
+                    legality_mode=cast("LegalityMode", legality_mode),
+                    max_plies=max_plies,
+                    evaluator=evaluator,
+                )
+                result = await game.run(session)
 
-        rows = (
-            await session.execute(
-                select(Attempt)
-                .where(Attempt.game_id == result.game_id)
-                .order_by(Attempt.ply, Attempt.attempt_number)
-            )
-        ).scalars()
-        result.attempt_log = [
-            (
-                f"ply={row.ply} attempt={row.attempt_number} "
-                f"move={row.parsed_move or '-'} parse={row.parse_ok} "
-                f"legal={row.legal_ok} error={row.error_type or '-'} "
-                f"latency_ms={row.latency_ms:.1f}"
-            )
-            for row in rows
-        ]
-        return result
+            rows = (
+                await session.execute(
+                    select(Attempt)
+                    .where(Attempt.game_id == result.game_id)
+                    .order_by(Attempt.ply, Attempt.attempt_number)
+                )
+            ).scalars()
+            attempt_log = [
+                (
+                    f"ply={row.ply} attempt={row.attempt_number} "
+                    f"move={row.parsed_move or '-'} parse={row.parse_ok} "
+                    f"legal={row.legal_ok} error={row.error_type or '-'} "
+                    f"latency_ms={row.latency_ms:.1f}"
+                )
+                for row in rows
+            ]
+            return result, attempt_log
+    finally:
+        if evaluator is not None:
+            evaluator.close()
 
 
 async def _tournament_async(
@@ -290,11 +297,24 @@ async def _rebuild_summaries_async(db_url: str, run_id: int | None) -> int:
             return await rebuild_game_summaries(session, run_id=run_id)
 
 
-async def _annotate_game_async(db_url: str, game_id: int, persona: str) -> int:
+async def _annotate_game_async(
+    db_url: str,
+    game_id: int,
+    persona: str,
+    model_name: str,
+    settings: Settings,
+) -> int:
     session_factory = create_session_factory(db_url)
+    model, service = llm_service_for(model_name, settings)
     async with session_factory() as session:
         async with session.begin():
-            return await annotate_game(session, game_id=game_id, persona=persona)
+            return await annotate_game(
+                session,
+                game_id=game_id,
+                persona=persona,
+                llm_service=service,
+                model=model,
+            )
 
 
 async def _export_report_async(db_url: str, game_id: int) -> str:
