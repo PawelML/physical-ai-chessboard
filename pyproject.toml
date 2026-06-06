@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "physical-ai-chessboard"
+version = "0.1.0"
+description = "Software-only LLM chess benchmark arena for the Physical AI Chessboard project."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite>=0.20.0",
+  "alembic>=1.13.2",
+  "chess>=1.10.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.2",
+  "pydantic-settings>=2.4.0",
+  "SQLAlchemy>=2.0.32",
+  "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "fastapi>=0.112.0",
+  "pytest>=8.3.2",
+  "pytest-asyncio>=0.23.8",
+  "ruff>=0.5.6",
+  "mypy>=1.11.1",
+  "uvicorn[standard]>=0.30.5",
+]
+backend = [
+  "fastapi>=0.112.0",
+  "uvicorn[standard]>=0.30.5",
+]
+
+[project.scripts]
+arena = "arena_core.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["arena_core", "backend"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["*.sh"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+  "unit: fast tests that do not require external services",
+  "integration: tests that exercise persistence or service boundaries",
+]

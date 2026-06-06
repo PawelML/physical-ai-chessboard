@@ -1,0 +1,397 @@
+import random
+import time
+from dataclasses import dataclass
+from typing import Protocol
+
+import chess
+import chess.pgn
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from arena_core.config import Settings
+from arena_core.evaluators.stockfish import EngineEvaluation
+from arena_core.llm.base import LLMService
+from arena_core.move_sources import MoveProposal
+from arena_core.parser import ParsedMove, parse_uci_json
+from arena_core.persistence import models
+from arena_core.persistence.repositories import ensure_prompt, text_hash
+from arena_core.prompts import LegalityMode, build_strict_prompt
+from arena_core.telemetry import estimate_usage
+
+
+class MoveSource(Protocol):
+    name: str
+    source_type: str
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        """Return one raw move proposal."""
+
+
+class MoveEvaluator(Protocol):
+    def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
+        """Evaluate one accepted move from the moving side's point of view."""
+
+
+class RandomMoveSource:
+    name = "random"
+    source_type = "random"
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        started = time.perf_counter()
+        move = random.choice(list(board.legal_moves)).uci()
+        latency_ms = (time.perf_counter() - started) * 1000
+        return MoveProposal(
+            raw_response=f'{{"move":"{move}"}}',
+            source=self.source_type,
+            latency_ms=latency_ms,
+        )
+
+
+class StaticMoveSource:
+    source_type = "llm"
+
+    def __init__(self, responses: list[str], *, name: str = "static") -> None:
+        self.responses = responses
+        self.name = name
+        self._idx = 0
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        started = time.perf_counter()
+        if self._idx >= len(self.responses):
+            response = '{"move":"0000"}'
+        else:
+            response = self.responses[self._idx]
+            self._idx += 1
+        return MoveProposal(
+            raw_response=response,
+            source=self.source_type,
+            latency_ms=(time.perf_counter() - started) * 1000,
+        )
+
+
+class LLMMoveSource:
+    source_type = "llm"
+
+    def __init__(self, *, model: str, service: LLMService) -> None:
+        self.name = model
+        self._model = model
+        self._service = service
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        started = time.perf_counter()
+        response = await self._service.complete(model=self._model, prompt=prompt)
+        latency_ms = (time.perf_counter() - started) * 1000
+        return MoveProposal(
+            raw_response=response.content,
+            source=self.source_type,
+            latency_ms=latency_ms,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            total_tokens=response.total_tokens,
+        )
+
+
+@dataclass
+class GameResult:
+    game_id: int
+    result: str
+    termination_reason: str
+    pgn: str
+    plies: int
+    attempt_log: list[str]
+
+
+class ArenaGame:
+    def __init__(
+        self,
+        *,
+        white: MoveSource,
+        black: MoveSource,
+        settings: Settings,
+        legality_mode: LegalityMode = "open",
+        max_plies: int | None = None,
+        evaluator: MoveEvaluator | None = None,
+        initial_board: chess.Board | None = None,
+        run_id: int | None = None,
+        white_participant_id: int | None = None,
+        black_participant_id: int | None = None,
+        opening_line_id: int | None = None,
+    ) -> None:
+        self.white = white
+        self.black = black
+        self.settings = settings
+        self.legality_mode: LegalityMode = legality_mode
+        self.max_plies = max_plies
+        self.evaluator = evaluator
+        self.board = initial_board.copy(stack=False) if initial_board is not None else chess.Board()
+        self.run_id = run_id
+        self.white_participant_id = white_participant_id
+        self.black_participant_id = black_participant_id
+        self.opening_line_id = opening_line_id
+        self._initial_fen = self.board.fen()
+        self._initial_ply = self.board.ply()
+        self._san_history: list[str] = []
+        self._uci_history: list[str] = []
+
+    async def run(self, session: AsyncSession) -> GameResult:
+        game_row = models.Game(
+            run_id=self.run_id,
+            white_participant_id=self.white_participant_id,
+            black_participant_id=self.black_participant_id,
+            opening_line_id=self.opening_line_id,
+        )
+        session.add(game_row)
+        await session.flush()
+
+        termination_reason = "unknown"
+        while not self.board.is_game_over(claim_draw=True):
+            played_plies = self.board.ply() - self._initial_ply
+            if self.max_plies is not None and played_plies >= self.max_plies:
+                termination_reason = "max_plies"
+                break
+            move_source = self.white if self.board.turn == chess.WHITE else self.black
+            accepted = await self._play_one_ply(session, game_row.id, move_source)
+            if not accepted:
+                termination_reason = "forfeit_invalid"
+                break
+        else:
+            termination_reason = self._termination_reason()
+
+        if termination_reason == "max_plies":
+            game_row.result = "*"
+        else:
+            game_row.result = self.board.result(claim_draw=True)
+        game_row.termination_reason = termination_reason
+        game_row.final_fen = self.board.fen()
+        game_row.pgn = self._export_pgn(game_row.result)
+        game_row.ended_at = models.utcnow()
+        await session.flush()
+        return GameResult(
+            game_id=game_row.id,
+            result=game_row.result,
+            termination_reason=termination_reason,
+            pgn=game_row.pgn,
+            plies=self.board.ply(),
+            attempt_log=[],
+        )
+
+    async def _play_one_ply(
+        self,
+        session: AsyncSession,
+        game_id: int,
+        move_source: MoveSource,
+    ) -> bool:
+        feedback: dict[str, object] | None = None
+        attempt_rows: list[models.Attempt] = []
+        latency_total_ms = 0.0
+        max_attempts = self.settings.max_retries + 1
+        for attempt_number in range(1, max_attempts + 1):
+            prompt = build_strict_prompt(
+                board=self.board,
+                san_history=self._san_history,
+                own_moves=self._own_moves_for_side(self.board.turn),
+                last_opponent_move=self._last_opponent_move_for_side(self.board.turn),
+                legality_mode=self.legality_mode,
+                feedback=feedback,
+                version=self.settings.prompt_version,
+            )
+            prompt_row = await ensure_prompt(session, prompt)
+            proposal = await move_source.propose(prompt=prompt.text, board=self.board.copy())
+            latency_total_ms += proposal.latency_ms
+            parsed = parse_uci_json(proposal.raw_response)
+            legal_ok, legal_reason, chess_move = self._validate_move(parsed)
+            feedback_for_attempt = feedback
+            attempt_row = models.Attempt(
+                game_id=game_id,
+                ply=self.board.ply() + 1,
+                attempt_number=attempt_number,
+                prompt_id=prompt_row.id,
+                raw_prompt_hash=text_hash(prompt.text),
+                raw_prompt=prompt.text if self.settings.prompt_retention_enabled else None,
+                raw_response=proposal.raw_response,
+                parsed_move=parsed.move,
+                parse_ok=parsed.parse_ok,
+                legal_ok=legal_ok,
+                error_type=None if legal_ok else parsed.error_type or "illegal_move",
+                feedback_given=feedback_for_attempt,
+                latency_ms=proposal.latency_ms,
+            )
+            session.add(attempt_row)
+            await session.flush()
+            self._add_token_usage(session, attempt_row.id, prompt.text, proposal)
+            attempt_rows.append(attempt_row)
+            if legal_ok and chess_move is not None:
+                await self._accept_move(
+                    session=session,
+                    game_id=game_id,
+                    move=chess_move,
+                    move_source=move_source,
+                    retries_used=attempt_number - 1,
+                    latency_total_ms=latency_total_ms,
+                    attempts=attempt_rows,
+                )
+                return True
+            remaining = max_attempts - attempt_number
+            if remaining <= 0:
+                return False
+            feedback = {
+                "error": parsed.error_type or "illegal_move",
+                "attempted_move": parsed.move,
+                "reason": parsed.reason or legal_reason,
+                "legal_moves": sorted(move.uci() for move in self.board.legal_moves),
+                "remaining_retries": remaining,
+            }
+        return False
+
+    def _add_token_usage(
+        self,
+        session: AsyncSession,
+        attempt_id: int,
+        prompt: str,
+        proposal: MoveProposal,
+    ) -> None:
+        estimated = estimate_usage(
+            prompt,
+            proposal.raw_response,
+            self.settings.default_context_window,
+        )
+        if proposal.prompt_tokens is not None:
+            prompt_tokens = proposal.prompt_tokens
+        else:
+            prompt_tokens = estimated.prompt_tokens
+        completion_tokens = (
+            proposal.completion_tokens
+            if proposal.completion_tokens is not None
+            else estimated.completion_tokens
+        )
+        if proposal.total_tokens is not None:
+            total_tokens = proposal.total_tokens
+        else:
+            total_tokens = prompt_tokens + completion_tokens
+        session.add(
+            models.TokenUsage(
+                attempt_id=attempt_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                estimated_context_window=estimated.estimated_context_window,
+                estimated_context_remaining=max(
+                    estimated.estimated_context_window - total_tokens,
+                    0,
+                ),
+                truncation_applied=estimated.truncation_applied,
+                cost_usd=0.0,
+            )
+        )
+
+    def _validate_move(self, parsed: ParsedMove) -> tuple[bool, str | None, chess.Move | None]:
+        if not parsed.parse_ok or parsed.move is None:
+            return False, parsed.reason, None
+        try:
+            move = chess.Move.from_uci(parsed.move)
+        except ValueError:
+            return False, f"{parsed.move} is not valid UCI syntax", None
+        if move not in self.board.legal_moves:
+            return False, f"{parsed.move} is not legal in the current position", None
+        return True, None, move
+
+    async def _accept_move(
+        self,
+        *,
+        session: AsyncSession,
+        game_id: int,
+        move: chess.Move,
+        move_source: MoveSource,
+        retries_used: int,
+        latency_total_ms: float,
+        attempts: list[models.Attempt],
+    ) -> None:
+        fen_before = self.board.fen()
+        legal_move_count = self.board.legal_moves.count()
+        san = self.board.san(move)
+        color = "white" if self.board.turn == chess.WHITE else "black"
+        self.board.push(move)
+        fen_after = self.board.fen()
+        move_row = models.Move(
+            game_id=game_id,
+            ply=self.board.ply(),
+            color=color,
+            fen_before=fen_before,
+            fen_after=fen_after,
+            accepted_uci=move.uci(),
+            accepted_san=san,
+            legal_move_count=legal_move_count,
+            move_source=move_source.source_type,
+            retries_used=retries_used,
+            latency_total_ms=latency_total_ms,
+        )
+        session.add(move_row)
+        await session.flush()
+        if self.evaluator is not None:
+            evaluation = self.evaluator.evaluate_move(chess.Board(fen_before), move)
+            session.add(
+                models.EngineEvaluation(
+                    move_id=move_row.id,
+                    engine_name=evaluation.engine_name,
+                    engine_version=evaluation.engine_version,
+                    nodes=evaluation.nodes,
+                    depth_reached=evaluation.depth_reached,
+                    eval_before_cp=evaluation.eval_before_cp,
+                    eval_after_cp=evaluation.eval_after_cp,
+                    mate_before=evaluation.mate_before,
+                    mate_after=evaluation.mate_after,
+                    best_move_uci=evaluation.best_move_uci,
+                    centipawn_loss=evaluation.centipawn_loss,
+                    classification=evaluation.classification,
+                )
+            )
+        for attempt in attempts:
+            if attempt.legal_ok:
+                attempt.move_id = move_row.id
+        self._san_history.append(san)
+        self._uci_history.append(move.uci())
+
+    def _own_moves_for_side(self, side: chess.Color) -> list[tuple[str, str]]:
+        start = 0 if side == chess.WHITE else 1
+        return list(zip(self._san_history[start::2], self._uci_history[start::2], strict=True))
+
+    def _last_opponent_move_for_side(self, side: chess.Color) -> str | None:
+        if not self._san_history:
+            return None
+        last_was_white = len(self._san_history) % 2 == 1
+        if side == chess.WHITE and not last_was_white:
+            return f"{self._san_history[-1]}/{self._uci_history[-1]}"
+        if side == chess.BLACK and last_was_white:
+            return f"{self._san_history[-1]}/{self._uci_history[-1]}"
+        return None
+
+    def _termination_reason(self) -> str:
+        if self.board.is_checkmate():
+            return "checkmate"
+        if self.board.is_stalemate():
+            return "stalemate"
+        if self.board.is_insufficient_material():
+            return "insufficient_material"
+        if self.board.is_seventyfive_moves():
+            return "seventyfive_moves"
+        if self.board.is_fivefold_repetition():
+            return "fivefold_repetition"
+        if self.board.can_claim_draw():
+            return "draw_claim"
+        return "game_over"
+
+    def _export_pgn(self, result: str) -> str:
+        game = chess.pgn.Game()
+        game.headers["Event"] = "Software Arena"
+        game.headers["White"] = self.white.name
+        game.headers["Black"] = self.black.name
+        game.headers["Result"] = result
+        if self._initial_fen != chess.STARTING_FEN:
+            game.headers["SetUp"] = "1"
+            game.headers["FEN"] = self._initial_fen
+        node: chess.pgn.GameNode = game
+        replay = chess.Board(self._initial_fen)
+        for uci in self._uci_history:
+            move = chess.Move.from_uci(uci)
+            node = node.add_variation(move)
+            replay.push(move)
+        return str(game)
