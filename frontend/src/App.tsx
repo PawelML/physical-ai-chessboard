@@ -1,5 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, RefreshCcw } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Pause,
+  Play,
+  RefreshCcw,
+  SkipBack,
+  SkipForward,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
@@ -13,19 +21,31 @@ import {
 
 import {
   fetchGame,
+  fetchGameJobs,
   fetchGames,
   fetchLeaderboard,
+  fetchModelOptions,
   fetchRunComparison,
   fetchRunEvents,
+  startGame,
   type GameDetail,
+  type GameJob,
   type LeaderboardRow,
+  type ModelOption,
   type Move,
   type RunComparisonRow,
+  type StartGamePayload,
 } from "./api";
 import { moveSquares, parseFenBoard, startFen } from "./chess";
 
 export default function App() {
   const gamesQuery = useQuery({ queryKey: ["games"], queryFn: fetchGames });
+  const modelOptionsQuery = useQuery({ queryKey: ["models"], queryFn: fetchModelOptions });
+  const gameJobsQuery = useQuery({
+    queryKey: ["game-jobs"],
+    queryFn: fetchGameJobs,
+    refetchInterval: 2_000,
+  });
   const [leaderboardRunId, setLeaderboardRunId] = useState<number | "all">("all");
   const [leaderboardColor, setLeaderboardColor] = useState<string>("all");
   const [leaderboardLegality, setLeaderboardLegality] = useState<string>("all");
@@ -42,8 +62,10 @@ export default function App() {
     queryKey: ["run-comparison"],
     queryFn: fetchRunComparison,
   });
+  const [sidebarTab, setSidebarTab] = useState<"start" | "history">("start");
   const [liveEvents, setLiveEvents] = useState(0);
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
+  const [activeLiveJobId, setActiveLiveJobId] = useState<string | null>(null);
   const effectiveGameId = selectedGameId ?? gamesQuery.data?.[0]?.id ?? null;
 
   const gameQuery = useQuery({
@@ -52,28 +74,104 @@ export default function App() {
     enabled: effectiveGameId !== null,
   });
   const [plyIndex, setPlyIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackDelayMs, setPlaybackDelayMs] = useState(900);
   const game = gameQuery.data;
   const refetchGames = gamesQuery.refetch;
   const refetchGame = gameQuery.refetch;
   const refetchLeaderboard = leaderboardQuery.refetch;
   const refetchComparison = comparisonQuery.refetch;
+  const refetchJobs = gameJobsQuery.refetch;
+
+  const selectGameWhenJobStarts = (jobId: string) => {
+    const poll = async (attempt: number) => {
+      const jobs = await fetchGameJobs();
+      void refetchJobs();
+      const job = jobs.find((row) => row.id === jobId);
+      if (job?.game_id) {
+        setSelectedGameId(job.game_id);
+        setPlyIndex(0);
+        void refetchGames();
+        void refetchGame();
+        return;
+      }
+      if (!job || job.status === "failed" || attempt >= 90) {
+        return;
+      }
+      window.setTimeout(() => {
+        void poll(attempt + 1);
+      }, 1_000);
+    };
+    void poll(0);
+  };
+
+  const startGameMutation = useMutation({
+    mutationFn: startGame,
+    onSuccess: (response) => {
+      setActiveLiveJobId(response.job_id);
+      void refetchJobs();
+      void refetchGames();
+      selectGameWhenJobStarts(response.job_id);
+    },
+  });
 
   useEffect(() => {
     const source = new EventSource("/api/stream/games?interval_seconds=2");
     source.addEventListener("games", () => {
       setLiveEvents((value) => value + 1);
       void refetchGames();
-      void refetchGame();
+      if (effectiveGameId !== null) {
+        void refetchGame();
+      }
       void refetchLeaderboard();
       void refetchComparison();
+      void refetchJobs();
     });
     source.onerror = () => source.close();
     return () => source.close();
-  }, [refetchComparison, refetchGame, refetchGames, refetchLeaderboard]);
+  }, [
+    effectiveGameId,
+    refetchComparison,
+    refetchGame,
+    refetchGames,
+    refetchJobs,
+    refetchLeaderboard,
+  ]);
 
   const maxPly = game?.moves.length ?? 0;
-  const currentMove = plyIndex > 0 ? game?.moves[plyIndex - 1] : undefined;
+  const activeLiveJob = gameJobsQuery.data?.find((job) => job.id === activeLiveJobId);
+  const followLiveGame =
+    activeLiveJob?.game_id === effectiveGameId && activeLiveJob.status !== "failed";
+  const replayPlyIndex = followLiveGame ? maxPly : Math.min(plyIndex, maxPly);
+  const currentMove = replayPlyIndex > 0 ? game?.moves[replayPlyIndex - 1] : undefined;
   const fen = currentMove?.fen_after ?? game?.moves[0]?.fen_before ?? startFen;
+  const whitePlayer = game?.white_player ?? "White";
+  const blackPlayer = game?.black_player ?? "Black";
+
+  useEffect(() => {
+    if (!isPlaying || replayPlyIndex >= maxPly) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const nextPly = Math.min(maxPly, replayPlyIndex + 1);
+      setPlyIndex(nextPly);
+      if (nextPly >= maxPly) {
+        setIsPlaying(false);
+      }
+    }, playbackDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [isPlaying, maxPly, playbackDelayMs, replayPlyIndex]);
+
+  const togglePlayback = () => {
+    setActiveLiveJobId(null);
+    if (maxPly === 0) {
+      return;
+    }
+    if (!isPlaying && replayPlyIndex >= maxPly) {
+      setPlyIndex(0);
+    }
+    setIsPlaying((value) => !value);
+  };
 
   return (
     <main className="arena-shell">
@@ -88,7 +186,9 @@ export default function App() {
             type="button"
             onClick={() => {
               void gamesQuery.refetch();
-              void gameQuery.refetch();
+              if (effectiveGameId !== null) {
+                void gameQuery.refetch();
+              }
             }}
             aria-label="Refresh games"
             title="Refresh games"
@@ -97,28 +197,93 @@ export default function App() {
           </button>
         </div>
 
-        <GameList
-          games={gamesQuery.data ?? []}
-          selectedGameId={effectiveGameId}
-          onSelect={(id) => {
-            setSelectedGameId(id);
-            setPlyIndex(0);
-          }}
-          loading={gamesQuery.isLoading}
-        />
+        <div className="sidebar-tabs" role="tablist" aria-label="Sidebar sections">
+          <button
+            className={sidebarTab === "start" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={sidebarTab === "start"}
+            onClick={() => setSidebarTab("start")}
+          >
+            Start
+          </button>
+          <button
+            className={sidebarTab === "history" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={sidebarTab === "history"}
+            onClick={() => setSidebarTab("history")}
+          >
+            History
+            <span>{gamesQuery.data?.length ?? 0}</span>
+          </button>
+        </div>
+
+        {sidebarTab === "start" ? (
+          <StartGamePanel
+            modelOptions={modelOptionsQuery.data ?? []}
+            jobs={gameJobsQuery.data ?? []}
+            loadingModels={modelOptionsQuery.isLoading}
+            submitting={startGameMutation.isPending}
+            error={startGameMutation.error}
+            onSubmit={(payload) => startGameMutation.mutate(payload)}
+          />
+        ) : (
+          <GameList
+            games={gamesQuery.data ?? []}
+            selectedGameId={effectiveGameId}
+            onSelect={(id) => {
+              setSelectedGameId(id);
+              setActiveLiveJobId(null);
+              setIsPlaying(false);
+              setPlyIndex(0);
+            }}
+            loading={gamesQuery.isLoading}
+          />
+        )}
       </aside>
 
       <section className="workspace">
         <header className="game-header">
           <div>
             <p className="eyebrow">Game {game?.id ?? "-"}</p>
-            <h2>{game ? `${game.result} · ${game.termination_reason ?? "running"}` : "No game selected"}</h2>
+            <h2>{game ? `${whitePlayer} vs ${blackPlayer}` : "No game selected"}</h2>
+            {game && (
+              <p className="game-result">
+                {game.result} · {game.termination_reason ?? "running"}
+              </p>
+            )}
           </div>
           <PlyControls
-            plyIndex={plyIndex}
+            plyIndex={replayPlyIndex}
             maxPly={maxPly}
-            onPrev={() => setPlyIndex((value) => Math.max(0, value - 1))}
-            onNext={() => setPlyIndex((value) => Math.min(maxPly, value + 1))}
+            isPlaying={isPlaying}
+            playbackDelayMs={playbackDelayMs}
+            onStart={() => {
+              setActiveLiveJobId(null);
+              setIsPlaying(false);
+              setPlyIndex(0);
+            }}
+            onPrev={() => {
+              setActiveLiveJobId(null);
+              setPlyIndex((value) => Math.max(0, value - 1));
+            }}
+            onTogglePlay={togglePlayback}
+            onNext={() => {
+              setActiveLiveJobId(null);
+              setPlyIndex((value) => Math.min(maxPly, value + 1));
+            }}
+            onEnd={() => {
+              setActiveLiveJobId(null);
+              setIsPlaying(false);
+              setPlyIndex(maxPly);
+            }}
+            onChangePly={(value) => {
+              setActiveLiveJobId(null);
+              setIsPlaying(false);
+              setPlyIndex(value);
+            }}
+            onSpeedChange={setPlaybackDelayMs}
           />
         </header>
         <div className="live-strip">
@@ -128,8 +293,23 @@ export default function App() {
         </div>
 
         <div className="replay-grid">
-          <ChessBoard fen={fen} activeMove={currentMove} />
-          <MovePanel game={game} plyIndex={plyIndex} currentMove={currentMove} />
+          <ChessBoard
+            fen={fen}
+            activeMove={currentMove}
+            plyIndex={replayPlyIndex}
+            whitePlayer={whitePlayer}
+            blackPlayer={blackPlayer}
+          />
+          <MovePanel
+            game={game}
+            plyIndex={replayPlyIndex}
+            currentMove={currentMove}
+            onSelectPly={(value) => {
+              setActiveLiveJobId(null);
+              setIsPlaying(false);
+              setPlyIndex(value);
+            }}
+          />
         </div>
         <EvalGraph game={game} />
         <Leaderboard
@@ -323,52 +503,269 @@ function GameList({
   );
 }
 
+function StartGamePanel({
+  modelOptions,
+  jobs,
+  loadingModels,
+  submitting,
+  error,
+  onSubmit,
+}: {
+  modelOptions: ModelOption[];
+  jobs: GameJob[];
+  loadingModels: boolean;
+  submitting: boolean;
+  error: Error | null;
+  onSubmit: (payload: StartGamePayload) => void;
+}) {
+  const ollamaOptions = modelOptions.filter((option) => option.provider === "ollama");
+  const defaultWhite = ollamaOptions[0]?.id ?? modelOptions[0]?.id ?? "random";
+  const defaultBlack = ollamaOptions[1]?.id ?? ollamaOptions[0]?.id ?? modelOptions[1]?.id ?? defaultWhite;
+  const [white, setWhite] = useState<string | null>(null);
+  const [black, setBlack] = useState<string | null>(null);
+  const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("open");
+  const [maxPlies, setMaxPlies] = useState("");
+  const selectedWhite = white ?? defaultWhite;
+  const selectedBlack = black ?? defaultBlack;
+
+  const recentJobs = jobs.slice(0, 4);
+
+  return (
+    <section className="start-game">
+      <div className="section-heading">
+        <p className="eyebrow">Match Control</p>
+        <h3>Start Game</h3>
+      </div>
+      <form
+        className="start-game-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit({
+            white: selectedWhite,
+            black: selectedBlack,
+            legality_mode: legalityMode,
+            max_plies: maxPlies ? Number(maxPlies) : null,
+          });
+        }}
+      >
+        <label>
+          <span>White</span>
+          <ModelInput
+            value={selectedWhite}
+            options={modelOptions}
+            disabled={submitting}
+            onChange={setWhite}
+          />
+        </label>
+        <label>
+          <span>Black</span>
+          <ModelInput
+            value={selectedBlack}
+            options={modelOptions}
+            disabled={submitting}
+            onChange={setBlack}
+          />
+        </label>
+        <label>
+          <span>Legality</span>
+          <select
+            value={legalityMode}
+            disabled={submitting}
+            onChange={(event) => setLegalityMode(event.target.value as "open" | "constrained")}
+          >
+            <option value="open">Open</option>
+            <option value="constrained">Constrained</option>
+          </select>
+        </label>
+        <label>
+          <span>Max plies</span>
+          <input
+            type="number"
+            min="1"
+            value={maxPlies}
+            placeholder="No limit"
+            disabled={submitting}
+            onChange={(event) => setMaxPlies(event.target.value)}
+          />
+        </label>
+        <button className="primary-button" type="submit" disabled={submitting || !selectedWhite || !selectedBlack}>
+          {submitting ? "Starting" : "Start game"}
+        </button>
+      </form>
+      {loadingModels && <p className="muted compact">Loading local Ollama models.</p>}
+      {error && <p className="error-text">{error.message}</p>}
+      {recentJobs.length > 0 && (
+        <div className="job-list">
+          {recentJobs.map((job) => (
+            <div key={job.id} className={`job-row ${job.status}`}>
+              <span>
+                {job.white} vs {job.black}
+              </span>
+              <strong>{jobLabel(job)}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ModelInput({
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  options: ModelOption[];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+      {options.map((option) => (
+        <option key={`${option.provider}-${option.id}`} value={option.id}>
+          {option.label} · {option.provider}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function jobLabel(job: GameJob) {
+  if (job.status === "running") {
+    return "running";
+  }
+  if (job.status === "failed") {
+    return job.error ?? "failed";
+  }
+  return job.game_id ? `Game ${job.game_id}` : "completed";
+}
+
 function PlyControls({
   plyIndex,
   maxPly,
+  isPlaying,
+  playbackDelayMs,
+  onStart,
   onPrev,
+  onTogglePlay,
   onNext,
+  onEnd,
+  onChangePly,
+  onSpeedChange,
 }: {
   plyIndex: number;
   maxPly: number;
+  isPlaying: boolean;
+  playbackDelayMs: number;
+  onStart: () => void;
   onPrev: () => void;
+  onTogglePlay: () => void;
   onNext: () => void;
+  onEnd: () => void;
+  onChangePly: (value: number) => void;
+  onSpeedChange: (value: number) => void;
 }) {
   return (
-    <div className="ply-controls" aria-label="Replay controls">
-      <button
-        className="icon-button"
-        type="button"
-        onClick={onPrev}
-        disabled={plyIndex === 0}
-        aria-label="Previous ply"
-        title="Previous ply"
-      >
-        <ChevronLeft size={20} />
-      </button>
-      <span>
-        {plyIndex} / {maxPly}
-      </span>
-      <button
-        className="icon-button"
-        type="button"
-        onClick={onNext}
-        disabled={plyIndex === maxPly}
-        aria-label="Next ply"
-        title="Next ply"
-      >
-        <ChevronRight size={20} />
-      </button>
+    <div className="replay-controls" aria-label="Replay controls">
+      <div className="ply-controls">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onStart}
+          disabled={plyIndex === 0}
+          aria-label="First position"
+          title="First position"
+        >
+          <SkipBack size={18} />
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onPrev}
+          disabled={plyIndex === 0}
+          aria-label="Previous ply"
+          title="Previous ply"
+        >
+          <ChevronLeft size={20} />
+        </button>
+        <button
+          className="icon-button play-button"
+          type="button"
+          onClick={onTogglePlay}
+          disabled={maxPly === 0}
+          aria-label={isPlaying ? "Pause replay" : "Play replay"}
+          title={isPlaying ? "Pause replay" : "Play replay"}
+        >
+          {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onNext}
+          disabled={plyIndex === maxPly}
+          aria-label="Next ply"
+          title="Next ply"
+        >
+          <ChevronRight size={20} />
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onEnd}
+          disabled={plyIndex === maxPly}
+          aria-label="Final position"
+          title="Final position"
+        >
+          <SkipForward size={18} />
+        </button>
+        <span>
+          {plyIndex} / {maxPly}
+        </span>
+      </div>
+      <div className="timeline-controls">
+        <input
+          type="range"
+          min="0"
+          max={maxPly}
+          value={plyIndex}
+          onChange={(event) => onChangePly(Number(event.target.value))}
+          aria-label="Replay timeline"
+        />
+        <select
+          value={playbackDelayMs}
+          onChange={(event) => onSpeedChange(Number(event.target.value))}
+          aria-label="Playback speed"
+        >
+          <option value={1400}>0.5x</option>
+          <option value={900}>1x</option>
+          <option value={450}>2x</option>
+        </select>
+      </div>
     </div>
   );
 }
 
-function ChessBoard({ fen, activeMove }: { fen: string; activeMove: Move | undefined }) {
+function ChessBoard({
+  fen,
+  activeMove,
+  plyIndex,
+  whitePlayer,
+  blackPlayer,
+}: {
+  fen: string;
+  activeMove: Move | undefined;
+  plyIndex: number;
+  whitePlayer: string;
+  blackPlayer: string;
+}) {
   const squares = useMemo(() => parseFenBoard(fen), [fen]);
   const highlighted = useMemo(() => moveSquares(activeMove?.accepted_uci), [activeMove]);
 
   return (
     <div className="board-wrap">
+      <PlayerStrip color="black" name={blackPlayer} active={activeMove?.color === "black"} />
       <div className="board" aria-label="Chess board">
         {squares.map((square, index) => {
           const file = index % 8;
@@ -389,6 +786,29 @@ function ChessBoard({ fen, activeMove }: { fen: string; activeMove: Move | undef
           );
         })}
       </div>
+      <PlayerStrip
+        color="white"
+        name={whitePlayer}
+        active={plyIndex === 0 || activeMove?.color === "white"}
+      />
+    </div>
+  );
+}
+
+function PlayerStrip({
+  color,
+  name,
+  active,
+}: {
+  color: "white" | "black";
+  name: string;
+  active: boolean;
+}) {
+  return (
+    <div className={active ? `player-strip ${color} active` : `player-strip ${color}`}>
+      <span className="color-swatch" />
+      <strong>{name}</strong>
+      <span>{color}</span>
     </div>
   );
 }
@@ -397,10 +817,12 @@ function MovePanel({
   game,
   plyIndex,
   currentMove,
+  onSelectPly,
 }: {
   game: GameDetail | undefined;
   plyIndex: number;
   currentMove: Move | undefined;
+  onSelectPly: (ply: number) => void;
 }) {
   if (!game) {
     return <section className="panel">Select a persisted game to inspect its move trace.</section>;
@@ -409,8 +831,8 @@ function MovePanel({
     return (
       <section className="panel">
         <h3>Initial Position</h3>
-        <p className="muted">Step forward to inspect accepted moves, retries, latency, tokens, and eval rows.</p>
-        <MoveTable moves={game.moves} activePly={plyIndex} />
+        <p className="muted">Starting position before the first model move.</p>
+        <MoveTable moves={game.moves} activePly={plyIndex} onSelectPly={onSelectPly} />
       </section>
     );
   }
@@ -480,7 +902,7 @@ function MovePanel({
         </div>
       )}
 
-      <MoveTable moves={game.moves} activePly={plyIndex} />
+      <MoveTable moves={game.moves} activePly={plyIndex} onSelectPly={onSelectPly} />
     </section>
   );
 }
@@ -494,18 +916,71 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-function MoveTable({ moves, activePly }: { moves: Move[]; activePly: number }) {
+function MoveTable({
+  moves,
+  activePly,
+  onSelectPly,
+}: {
+  moves: Move[];
+  activePly: number;
+  onSelectPly: (ply: number) => void;
+}) {
+  const pairs = useMemo(() => {
+    const grouped: { number: number; white?: Move; black?: Move }[] = [];
+    moves.forEach((move) => {
+      const number = Math.ceil(move.ply / 2);
+      const row = grouped[number - 1] ?? { number };
+      if (move.color === "white") {
+        row.white = move;
+      } else {
+        row.black = move;
+      }
+      grouped[number - 1] = row;
+    });
+    return grouped;
+  }, [moves]);
+
   return (
     <div className="move-table">
-      {moves.map((move) => (
-        <div key={move.id} className={move.ply === activePly ? "move-line active" : "move-line"}>
-          <span>{move.ply}</span>
-          <span>{move.accepted_san}</span>
-          <span>{move.retries_used} retry</span>
-          <span>{move.engine_evaluations[0]?.centipawn_loss ?? "—"} CPL</span>
+      <div className="move-table-head">
+        <span>#</span>
+        <span>White</span>
+        <span>Black</span>
+      </div>
+      {pairs.map((pair) => (
+        <div key={pair.number} className="move-pair">
+          <span className="move-number">{pair.number}</span>
+          <MoveCell move={pair.white} activePly={activePly} onSelectPly={onSelectPly} />
+          <MoveCell move={pair.black} activePly={activePly} onSelectPly={onSelectPly} />
         </div>
       ))}
     </div>
+  );
+}
+
+function MoveCell({
+  move,
+  activePly,
+  onSelectPly,
+}: {
+  move: Move | undefined;
+  activePly: number;
+  onSelectPly: (ply: number) => void;
+}) {
+  if (!move) {
+    return <span className="move-cell empty">—</span>;
+  }
+  return (
+    <button
+      className={move.ply === activePly ? "move-cell active" : "move-cell"}
+      type="button"
+      onClick={() => onSelectPly(move.ply)}
+    >
+      <span>{move.accepted_san}</span>
+      <small>
+        {move.retries_used} retry · {move.engine_evaluations[0]?.centipawn_loss ?? "—"} CPL
+      </small>
+    </button>
   );
 }
 

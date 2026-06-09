@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Annotated, cast
 
 import typer
@@ -175,6 +176,8 @@ async def _play_async(
     legality_mode: str,
     max_plies: int | None,
     stockfish_path: str | None,
+    commit_after_each_ply: bool = False,
+    on_game_started: Callable[[int], Awaitable[None] | None] | None = None,
 ) -> tuple[GameResult, list[str]]:
     await create_tables(db_url)
     session_factory = create_session_factory(db_url)
@@ -193,7 +196,7 @@ async def _play_async(
     )
     try:
         async with session_factory() as session:
-            async with session.begin():
+            if commit_after_each_ply:
                 game = ArenaGame(
                     white=white,
                     black=black,
@@ -202,7 +205,22 @@ async def _play_async(
                     max_plies=max_plies,
                     evaluator=evaluator,
                 )
-                result = await game.run(session)
+                result = await game.run(
+                    session,
+                    commit_after_each_ply=True,
+                    on_game_started=on_game_started,
+                )
+            else:
+                async with session.begin():
+                    game = ArenaGame(
+                        white=white,
+                        black=black,
+                        settings=settings,
+                        legality_mode=cast("LegalityMode", legality_mode),
+                        max_plies=max_plies,
+                        evaluator=evaluator,
+                    )
+                    result = await game.run(session)
 
             rows = (
                 await session.execute(

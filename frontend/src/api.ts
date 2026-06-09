@@ -70,6 +70,10 @@ export type Move = {
 export type GameDetail = {
   id: number;
   run_id: number | null;
+  white_participant_id: number | null;
+  black_participant_id: number | null;
+  white_player: string | null;
+  black_player: string | null;
   result: string;
   termination_reason: string | null;
   final_fen: string | null;
@@ -136,10 +140,53 @@ export type RunComparisonRow = {
   total_tokens: number;
 };
 
+export type ModelOption = {
+  id: string;
+  label: string;
+  provider: string;
+};
+
+export type GameJobStatus = "running" | "completed" | "failed";
+
+export type GameJob = {
+  id: string;
+  status: GameJobStatus;
+  white: string;
+  black: string;
+  legality_mode: string;
+  max_plies: number | null;
+  game_id: number | null;
+  result: string | null;
+  termination_reason: string | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type StartGamePayload = {
+  white: string;
+  black: string;
+  legality_mode: "open" | "constrained";
+  max_plies: number | null;
+};
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`/api${path}`);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${message}`);
   }
   return response.json() as Promise<T>;
 }
@@ -176,4 +223,16 @@ export function fetchRunEvents(runId: number): Promise<OperationalEvent[]> {
 
 export function fetchRunComparison(): Promise<RunComparisonRow[]> {
   return getJson<RunComparisonRow[]>("/runs/compare");
+}
+
+export function fetchModelOptions(): Promise<ModelOption[]> {
+  return getJson<ModelOption[]>("/models");
+}
+
+export function fetchGameJobs(): Promise<GameJob[]> {
+  return getJson<GameJob[]>("/games/jobs");
+}
+
+export function startGame(payload: StartGamePayload): Promise<{ job_id: string; status: string }> {
+  return postJson<{ job_id: string; status: string }>("/games/start", payload);
 }

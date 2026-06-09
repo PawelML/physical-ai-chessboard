@@ -1,6 +1,8 @@
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import Protocol
 
 import chess
@@ -131,15 +133,29 @@ class ArenaGame:
         self._san_history: list[str] = []
         self._uci_history: list[str] = []
 
-    async def run(self, session: AsyncSession) -> GameResult:
+    async def run(
+        self,
+        session: AsyncSession,
+        *,
+        commit_after_each_ply: bool = False,
+        on_game_started: Callable[[int], Awaitable[None] | None] | None = None,
+    ) -> GameResult:
         game_row = models.Game(
             run_id=self.run_id,
             white_participant_id=self.white_participant_id,
             black_participant_id=self.black_participant_id,
             opening_line_id=self.opening_line_id,
+            final_fen=self.board.fen(),
+            pgn=self._export_pgn("*"),
         )
         session.add(game_row)
         await session.flush()
+        if commit_after_each_ply:
+            await session.commit()
+        if on_game_started is not None:
+            callback_result = on_game_started(game_row.id)
+            if isawaitable(callback_result):
+                await callback_result
 
         termination_reason = "unknown"
         try:
@@ -150,6 +166,11 @@ class ArenaGame:
                     break
                 move_source = self.white if self.board.turn == chess.WHITE else self.black
                 accepted = await self._play_one_ply(session, game_row.id, move_source)
+                if accepted and commit_after_each_ply:
+                    game_row.final_fen = self.board.fen()
+                    game_row.pgn = self._export_pgn("*")
+                if commit_after_each_ply:
+                    await session.commit()
                 if not accepted:
                     termination_reason = "forfeit_invalid"
                     break
@@ -170,7 +191,10 @@ class ArenaGame:
         game_row.final_fen = self.board.fen()
         game_row.pgn = self._export_pgn(game_row.result)
         game_row.ended_at = models.utcnow()
-        await session.flush()
+        if commit_after_each_ply:
+            await session.commit()
+        else:
+            await session.flush()
         return GameResult(
             game_id=game_row.id,
             result=game_row.result,

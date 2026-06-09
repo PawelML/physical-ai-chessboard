@@ -1,13 +1,18 @@
 import asyncio
 import json
+import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from typing import Literal
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from arena_core.cli import _play_async
 from arena_core.config import Settings, get_settings
 from arena_core.persistence.database import create_session_factory
 from arena_core.persistence.models import (
@@ -25,6 +30,41 @@ from arena_core.persistence.models import (
 from arena_core.reports import export_game_report
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
+GameJobStatus = Literal["running", "completed", "failed"]
+
+
+class GameJob(BaseModel):
+    id: str
+    status: GameJobStatus
+    white: str
+    black: str
+    legality_mode: str
+    max_plies: int | None
+    game_id: int | None = None
+    result: str | None = None
+    termination_reason: str | None = None
+    error: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
+class ModelOption(BaseModel):
+    id: str
+    label: str
+    provider: str
+
+
+class StartGameRequest(BaseModel):
+    white: str
+    black: str
+    legality_mode: Literal["open", "constrained"] = "open"
+    max_plies: int | None = None
+    stockfish_path: str | None = None
+
+
+class StartGameResponse(BaseModel):
+    job_id: str
+    status: GameJobStatus
 
 
 class GameListItem(BaseModel):
@@ -99,6 +139,10 @@ class MoveOut(BaseModel):
 class GameDetail(BaseModel):
     id: int
     run_id: int | None
+    white_participant_id: int | None
+    black_participant_id: int | None
+    white_player: str | None
+    black_player: str | None
     result: str
     termination_reason: str | None
     final_fen: str | None
@@ -171,10 +215,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     effective_settings = settings or get_settings()
     session_factory = create_session_factory(effective_settings.database_url)
     api = FastAPI(title="Physical AI Chessboard Arena")
+    game_jobs: dict[str, GameJob] = {}
 
     @api.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @api.get("/models")
+    async def list_models() -> list[ModelOption]:
+        options = [ModelOption(id="random", label="random", provider="built-in")]
+        if effective_settings.stockfish_path:
+            options.append(ModelOption(id="stockfish", label="stockfish", provider="engine"))
+        options.extend(await _ollama_model_options(effective_settings))
+        return options
+
+    @api.get("/games/jobs")
+    async def list_game_jobs() -> list[GameJob]:
+        return sorted(game_jobs.values(), key=lambda job: job.created_at, reverse=True)
+
+    @api.post("/games/start")
+    async def start_game(payload: StartGameRequest) -> StartGameResponse:
+        from fastapi import HTTPException
+
+        white = payload.white.strip()
+        black = payload.black.strip()
+        if not white or not black:
+            raise HTTPException(status_code=400, detail="white and black sources are required")
+        if payload.max_plies is not None and payload.max_plies <= 0:
+            raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+
+        job_id = uuid.uuid4().hex
+        job = GameJob(
+            id=job_id,
+            status="running",
+            white=white,
+            black=black,
+            legality_mode=payload.legality_mode,
+            max_plies=payload.max_plies,
+            created_at=_utcnow_iso(),
+        )
+        game_jobs[job_id] = job
+        asyncio.create_task(
+            _run_game_job(
+                job_id=job_id,
+                jobs=game_jobs,
+                settings=effective_settings,
+                white=white,
+                black=black,
+                legality_mode=payload.legality_mode,
+                max_plies=payload.max_plies,
+                stockfish_path=payload.stockfish_path,
+            )
+        )
+        return StartGameResponse(job_id=job_id, status="running")
 
     @api.get("/games")
     async def list_games() -> list[GameListItem]:
@@ -363,9 +456,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_factory,
                 [move.id for move in move_rows],
             )
+            white_participant = (
+                await session.get(RunParticipant, game.white_participant_id)
+                if game.white_participant_id is not None
+                else None
+            )
+            black_participant = (
+                await session.get(RunParticipant, game.black_participant_id)
+                if game.black_participant_id is not None
+                else None
+            )
             return GameDetail(
                 id=game.id,
                 run_id=game.run_id,
+                white_participant_id=game.white_participant_id,
+                black_participant_id=game.black_participant_id,
+                white_player=(
+                    white_participant.display_name
+                    if white_participant
+                    else _pgn_header(game.pgn, "White")
+                ),
+                black_player=(
+                    black_participant.display_name
+                    if black_participant
+                    else _pgn_header(game.pgn, "Black")
+                ),
                 result=game.result,
                 termination_reason=game.termination_reason,
                 final_fen=game.final_fen,
@@ -421,6 +536,72 @@ async def _game_stream_payload(
             for row in rows
         ]
     return {"games": games}
+
+
+async def _ollama_model_options(settings: Settings) -> list[ModelOption]:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return []
+
+    payload = response.json()
+    options: list[ModelOption] = []
+    for item in payload.get("models", []):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model")
+        if isinstance(name, str) and name:
+            options.append(ModelOption(id=name, label=name, provider="ollama"))
+    return sorted(options, key=lambda option: option.label)
+
+
+async def _run_game_job(
+    *,
+    job_id: str,
+    jobs: dict[str, GameJob],
+    settings: Settings,
+    white: str,
+    black: str,
+    legality_mode: str,
+    max_plies: int | None,
+    stockfish_path: str | None,
+) -> None:
+    try:
+        def mark_game_started(game_id: int) -> None:
+            jobs[job_id] = jobs[job_id].model_copy(update={"game_id": game_id})
+
+        result, _attempt_log = await _play_async(
+            settings=settings,
+            db_url=settings.database_url,
+            white_name=white,
+            black_name=black,
+            legality_mode=legality_mode,
+            max_plies=max_plies,
+            stockfish_path=stockfish_path,
+            commit_after_each_ply=True,
+            on_game_started=mark_game_started,
+        )
+    except Exception as exc:
+        jobs[job_id] = jobs[job_id].model_copy(
+            update={
+                "status": "failed",
+                "error": str(exc),
+                "completed_at": _utcnow_iso(),
+            }
+        )
+        return
+
+    jobs[job_id] = jobs[job_id].model_copy(
+        update={
+            "status": "completed",
+            "game_id": result.game_id,
+            "result": result.result,
+            "termination_reason": result.termination_reason,
+            "completed_at": _utcnow_iso(),
+        }
+    )
 
 
 async def _all_summaries(
@@ -585,6 +766,21 @@ def _weighted_nullable_average(values: list[tuple[float | None, int]]) -> float 
     if not known:
         return None
     return _weighted_average([(value, weight) for value, weight in known])
+
+
+def _pgn_header(pgn: str | None, tag: str) -> str | None:
+    if not pgn:
+        return None
+    prefix = f'[{tag} "'
+    for line in pgn.splitlines():
+        if line.startswith(prefix) and line.endswith('"]'):
+            value = line[len(prefix) : -2].strip()
+            return value if value and value != "?" else None
+    return None
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 app = create_app()
