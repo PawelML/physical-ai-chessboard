@@ -7,7 +7,7 @@ import chess
 PromptMode = Literal["strict", "reasoning"]
 LegalityMode = Literal["open", "constrained"]
 
-STRICT_TEMPLATE_VERSION = "strict-v4"
+STRICT_TEMPLATE_VERSION = "strict-v6"
 
 
 @dataclass(frozen=True)
@@ -38,15 +38,31 @@ def build_strict_prompt(
 ) -> BuiltPrompt:
     side = "white" if board.turn == chess.WHITE else "black"
     parts = [
-        "You are playing a benchmark chess game.",
+        "You are playing a competitive chess game and your goal is to win.",
+        (
+            "Win by checkmating the opponent's king; if a win is out of reach, "
+            "play for a draw rather than a loss."
+        ),
+        (
+            "Among the legal moves, choose the strongest one: develop your pieces, "
+            "fight for the center, keep your own king safe, and never give away "
+            "material for free."
+        ),
+        (
+            "Before committing, look for checks, captures and threats — both your own "
+            "tactical chances and the opponent's threats against you."
+        ),
         (
             "Return only strict JSON in this exact shape: "
-            "{\"move\":\"e2e4\",\"rationale\":\"short reason\","
+            "{\"move\":\"e4\",\"rationale\":\"short reason\","
             "\"strategy_update\":{\"objective\":\"short updated plan\"}}."
             if strategic_memory is not None
-            else "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}."
+            else "Return only strict JSON in this exact shape: {\"move\":\"e4\"}."
         ),
-        "The move value must be UCI notation, not SAN. Use e2e4, not e4.",
+        (
+            "The move value must be standard algebraic notation (SAN), "
+            "e.g. e4, Nf3, O-O, exd5, e8=Q. Do not include move numbers or annotations."
+        ),
         f"Side to move: {side}.",
         f"Current FEN: {board.fen()}",
         f"SAN history: {' '.join(san_history) if san_history else '(start position)'}",
@@ -75,13 +91,13 @@ def build_strict_prompt(
     if repetition_warning is not None:
         parts.append(f"Repetition warning: {repetition_warning}")
     if legality_mode == "constrained" or feedback is not None:
-        legal_moves = sorted(move.uci() for move in board.legal_moves)
+        legal_moves = sorted(board.san(move) for move in board.legal_moves)
         parts.extend(
             [
-                "Choose exactly one move from this legal UCI move list.",
-                "Your move must exactly match one listed UCI string.",
+                "Choose exactly one move from this legal move list.",
+                "Your move must exactly match one listed SAN move.",
                 "If strategic memory conflicts with the legal move list, ignore the memory.",
-                "Legal UCI moves: " + ", ".join(legal_moves),
+                "Legal moves (SAN): " + ", ".join(legal_moves),
             ]
         )
     if feedback is not None:
@@ -89,7 +105,7 @@ def build_strict_prompt(
             [
                 "Your previous response was invalid.",
                 f"Do not repeat this attempted move: {feedback.get('attempted_move') or '(none)'}.",
-                "Choose a different move that exactly appears in Legal UCI moves.",
+                "Choose a different move that exactly appears in the legal move list.",
             ]
         )
         parts.append(f"Previous attempt feedback: {feedback}")

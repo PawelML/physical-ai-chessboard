@@ -16,10 +16,10 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./arena.db"
     prompt_retention_enabled: bool = True
-    prompt_version: str = "strict-v4"
+    prompt_version: str = "strict-v6"
     max_retries: int = Field(default=3, ge=0, le=10)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_timeout_seconds: float = Field(default=120.0, gt=0)
+    ollama_timeout_seconds: float = Field(default=600.0, gt=0)
     ollama_temperature: float = Field(default=0.0, ge=0.0)
     ollama_top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     ollama_num_ctx: int | None = Field(default=None, gt=0)

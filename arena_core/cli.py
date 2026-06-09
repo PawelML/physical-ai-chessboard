@@ -237,7 +237,7 @@ async def _play_async(
                     f"ply={row.ply} attempt={row.attempt_number} "
                     f"move={row.parsed_move or '-'} parse={row.parse_ok} "
                     f"legal={row.legal_ok} error={row.error_type or '-'} "
-                    f"latency_ms={row.latency_ms:.1f}"
+                    f"think={row.thinking_used} latency_ms={row.latency_ms:.1f}"
                 )
                 for row in rows
             ]

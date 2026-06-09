@@ -67,29 +67,37 @@ class OllamaLLMService(LLMService):
             "think": self._should_think(model),
             "options": options,
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = None
-            for candidate_num_gpu in self._num_gpu_candidates():
-                if candidate_num_gpu is None:
-                    options.pop("num_gpu", None)
-                else:
-                    options["num_gpu"] = candidate_num_gpu
-                response = await self._post_generate(client, request_payload)
-                if _is_gpu_memory_error_response(response) and candidate_num_gpu not in {
-                    None,
-                    0,
-                }:
-                    continue
-                self._working_num_gpu = candidate_num_gpu
-                break
-            if response is None:
-                raise OllamaServiceError("Ollama generate failed: no request was attempted")
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise OllamaServiceError(_ollama_error_message(exc.response)) from exc
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = None
+                for candidate_num_gpu in self._num_gpu_candidates():
+                    if candidate_num_gpu is None:
+                        options.pop("num_gpu", None)
+                    else:
+                        options["num_gpu"] = candidate_num_gpu
+                    response = await self._post_generate(client, request_payload)
+                    if _is_gpu_memory_error_response(response) and candidate_num_gpu not in {
+                        None,
+                        0,
+                    }:
+                        continue
+                    self._working_num_gpu = candidate_num_gpu
+                    break
+                if response is None:
+                    raise OllamaServiceError("Ollama generate failed: no request was attempted")
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise OllamaServiceError(_ollama_error_message(exc.response)) from exc
+        except httpx.TimeoutException as exc:
+            raise OllamaServiceError(
+                f"Ollama generate timed out after {self._timeout:.0f}s for model {model!r}. "
+                "A cold model load (large models can take >100s) likely exceeded the timeout; "
+                "raise ARENA_OLLAMA_TIMEOUT_SECONDS or keep the model resident."
+            ) from exc
         response_payload = response.json()
         content = str(response_payload.get("response") or response_payload.get("thinking") or "")
+        thinking_text = response_payload.get("thinking")
         prompt_eval_count = response_payload.get("prompt_eval_count")
         eval_count = response_payload.get("eval_count")
         total_tokens = None
@@ -102,6 +110,8 @@ class OllamaLLMService(LLMService):
             prompt_tokens=prompt_eval_count,
             completion_tokens=eval_count,
             total_tokens=total_tokens,
+            thinking=str(thinking_text) if thinking_text else None,
+            thinking_used=bool(request_payload.get("think")),
         )
 
     async def _post_generate(
@@ -122,7 +132,7 @@ class OllamaLLMService(LLMService):
             return [self._working_num_gpu]
         minimum = self._min_num_gpu if self._min_num_gpu is not None else 0
         minimum = min(minimum, self._num_gpu)
-        candidates = list(range(self._num_gpu, max(minimum, 1) - 1, -8))
+        candidates: list[int | None] = list(range(self._num_gpu, max(minimum, 1) - 1, -8))
         if minimum == 0 and 0 not in candidates:
             candidates.append(0)
         return candidates

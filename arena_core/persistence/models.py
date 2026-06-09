@@ -191,6 +191,10 @@ class Attempt(Base):
     error_type: Mapped[str | None] = mapped_column(String(64))
     feedback_given: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    thinking: Mapped[str | None] = mapped_column(Text)
+    thinking_used: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
 
     game: Mapped[Game] = relationship(back_populates="attempts")
     move: Mapped[Move | None] = relationship(back_populates="attempts")

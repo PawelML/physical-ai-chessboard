@@ -126,6 +126,39 @@ async def test_invalid_attempts_are_persisted_and_retried(tmp_path: Path) -> Non
 
 
 @pytest.mark.integration
+async def test_san_and_uci_moves_are_both_accepted(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+    # White answers in SAN, Black answers in raw UCI: both must be coerced and accepted.
+    white = StaticMoveSource(['{"move":"e4"}', '{"move":"Nf3"}'])
+    black = StaticMoveSource(['{"move":"e7e5"}'])
+
+    async with session_factory() as session:
+        async with session.begin():
+            result = await ArenaGame(
+                white=white,
+                black=black,
+                settings=Settings(max_retries=3),
+                max_plies=3,
+            ).run(session)
+
+    async with session_factory() as session:
+        moves = (
+            await session.execute(select(Move).order_by(Move.ply))
+        ).scalars().all()
+
+    assert result.plies == 3
+    # SAN inputs (e4, Nf3) and the UCI input (e7e5) all normalize to the same move rows.
+    assert [(m.accepted_san, m.accepted_uci) for m in moves] == [
+        ("e4", "e2e4"),
+        ("e5", "e7e5"),
+        ("Nf3", "g1f3"),
+    ]
+    assert all(m.retries_used == 0 for m in moves)
+
+
+@pytest.mark.integration
 async def test_forfeit_by_invalid_scores_loss_for_forfeiting_side(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
     await init_db(db_url)
