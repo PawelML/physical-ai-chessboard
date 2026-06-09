@@ -12,6 +12,7 @@ from arena_core.tournaments import TournamentConfig, run_tournament
 from backend.main import (
     GameDefaults,
     _game_stream_payload,
+    _gemini_model_options,
     _settings_for_ollama_options,
     create_app,
 )
@@ -20,6 +21,36 @@ from backend.main import (
 class StubLLMService(LLMService):
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
         return LLMResponse(content="backend commentary")
+
+
+def test_gemini_model_option_uses_configured_model() -> None:
+    options = _gemini_model_options(
+        Settings(
+            api_providers_enabled=True,
+            gemini_api_key="test-key",
+            gemini_model="gemini-3-flash-preview",
+        )
+    )
+
+    assert [option.model_dump() for option in options] == [
+        {
+            "id": "gemini:gemini-3-flash-preview",
+            "label": "gemini-3-flash-preview",
+            "provider": "gemini",
+        }
+    ]
+
+
+def test_gemini_model_option_requires_enabled_provider() -> None:
+    options = _gemini_model_options(
+        Settings(
+            api_providers_enabled=False,
+            gemini_api_key="test-key",
+            gemini_model="gemini-3-flash-preview",
+        )
+    )
+
+    assert options == []
 
 
 async def test_backend_lists_and_fetches_game(tmp_path: Path) -> None:

@@ -286,6 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         options = [ModelOption(id="random", label="random", provider="built-in")]
         if effective_settings.stockfish_path:
             options.append(ModelOption(id="stockfish", label="stockfish", provider="engine"))
+        options.extend(_gemini_model_options(effective_settings))
         options.extend(await _ollama_model_options(effective_settings))
         return options
 
@@ -686,6 +687,22 @@ async def _ollama_model_options(settings: Settings) -> list[ModelOption]:
     return sorted(options, key=lambda option: option.label)
 
 
+def _gemini_model_options(settings: Settings) -> list[ModelOption]:
+    if (
+        not settings.api_providers_enabled
+        or not settings.gemini_api_key
+        or not settings.gemini_model
+    ):
+        return []
+    return [
+        ModelOption(
+            id=f"gemini:{settings.gemini_model}",
+            label=settings.gemini_model,
+            provider="gemini",
+        )
+    ]
+
+
 async def _gpu_telemetry() -> list[GpuTelemetry]:
     if shutil.which("nvidia-smi") is None:
         return []
@@ -812,7 +829,7 @@ async def _run_game_job(
         jobs[job_id] = jobs[job_id].model_copy(
             update={
                 "status": "failed",
-                "error": str(exc),
+                "error": str(exc) or type(exc).__name__,
                 "completed_at": _utcnow_iso(),
             }
         )

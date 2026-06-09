@@ -3,7 +3,12 @@ import pytest
 
 from arena_core.config import Settings
 from arena_core.llm.ollama import OllamaLLMService, _ollama_error_message
-from arena_core.llm.providers import ProviderDisabledError, llm_service_for, parse_provider_model
+from arena_core.llm.providers import (
+    GeminiLLMService,
+    ProviderDisabledError,
+    llm_service_for,
+    parse_provider_model,
+)
 
 
 def test_parse_provider_model_defaults_to_local() -> None:
@@ -78,6 +83,79 @@ async def test_ollama_retries_without_thinking_when_model_rejects_it(
 
     assert response.content == '{"move":"e7e5"}'
     assert [call["think"] for call in calls] == [True, False]
+
+
+async def test_gemini_retries_timeout_before_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise httpx.ReadTimeout("timed out")
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [{"content": {"parts": [{"text": '{"move":"e2e4"}'}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 12,
+                        "candidatesTokenCount": 5,
+                        "totalTokenCount": 17,
+                    },
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("arena_core.llm.providers.asyncio.sleep", lambda _delay: _noop())
+    service = GeminiLLMService(api_key="test-key", timeout_seconds=10, max_retries=2)
+
+    response = await service.complete(model="gemini-test", prompt="prompt")
+
+    assert response.content == '{"move":"e2e4"}'
+    assert response.total_tokens == 17
+    assert calls == 3
+
+
+async def test_gemini_does_not_retry_bad_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(400, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    service = GeminiLLMService(api_key="test-key", timeout_seconds=10, max_retries=2)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await service.complete(model="gemini-test", prompt="prompt")
+
+    assert calls == 1
+
+
+async def _noop() -> None:
+    return None
 
 
 @pytest.mark.parametrize(

@@ -29,9 +29,12 @@ class Settings(BaseSettings):
     ollama_cpu_offload_min_gpu_layers: int = Field(default=8, ge=0)
     ollama_think: str = "off"
     api_providers_enabled: bool = False
+    api_timeout_seconds: float = Field(default=120.0, gt=0)
+    api_max_retries: int = Field(default=2, ge=0, le=5)
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
+    gemini_model: str | None = None
     default_context_window: int = Field(default=8192, gt=0)
     stockfish_path: str | None = None
     stockfish_nodes: int = Field(default=200_000, gt=0)

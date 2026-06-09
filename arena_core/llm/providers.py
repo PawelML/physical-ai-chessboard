@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,15 +20,25 @@ class ProviderDisabledError(ValueError):
 
 
 class OpenAICompatibleLLMService(LLMService):
-    def __init__(self, *, base_url: str, api_key: str, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float = 120.0,
+        max_retries: int = 2,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout_seconds
+        self._max_retries = max_retries
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
+            response = await _post_with_retries(
+                client,
                 f"{self._base_url}/chat/completions",
+                max_retries=self._max_retries,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json={
                     "model": model,
@@ -35,7 +46,6 @@ class OpenAICompatibleLLMService(LLMService):
                     "temperature": 0,
                 },
             )
-            response.raise_for_status()
         payload = response.json()
         choice = payload.get("choices", [{}])[0]
         message = choice.get("message", {})
@@ -51,14 +61,23 @@ class OpenAICompatibleLLMService(LLMService):
 
 
 class AnthropicLLMService(LLMService):
-    def __init__(self, *, api_key: str, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        timeout_seconds: float = 120.0,
+        max_retries: int = 2,
+    ) -> None:
         self._api_key = api_key
         self._timeout = timeout_seconds
+        self._max_retries = max_retries
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
+            response = await _post_with_retries(
+                client,
                 "https://api.anthropic.com/v1/messages",
+                max_retries=self._max_retries,
                 headers={
                     "x-api-key": self._api_key,
                     "anthropic-version": "2023-06-01",
@@ -70,7 +89,6 @@ class AnthropicLLMService(LLMService):
                     "messages": [{"role": "user", "content": prompt}],
                 },
             )
-            response.raise_for_status()
         payload: dict[str, Any] = response.json()
         blocks = payload.get("content", [])
         content = "".join(block.get("text", "") for block in blocks if isinstance(block, dict))
@@ -93,9 +111,16 @@ class AnthropicLLMService(LLMService):
 
 
 class GeminiLLMService(LLMService):
-    def __init__(self, *, api_key: str, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        timeout_seconds: float = 120.0,
+        max_retries: int = 2,
+    ) -> None:
         self._api_key = api_key
         self._timeout = timeout_seconds
+        self._max_retries = max_retries
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
         url = (
@@ -103,14 +128,15 @@ class GeminiLLMService(LLMService):
             f"{model}:generateContent?key={self._api_key}"
         )
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
+            response = await _post_with_retries(
+                client,
                 url,
+                max_retries=self._max_retries,
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0},
                 },
             )
-            response.raise_for_status()
         payload: dict[str, Any] = response.json()
         candidates = payload.get("candidates", [])
         parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
@@ -126,6 +152,37 @@ class GeminiLLMService(LLMService):
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
         )
+
+
+async def _post_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_retries: int,
+    **kwargs: Any,
+) -> httpx.Response:
+    for retry in range(max_retries + 1):
+        try:
+            response = await client.post(url, **kwargs)
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            if retry >= max_retries or not _retryable_status(exc.response.status_code):
+                raise
+            await asyncio.sleep(_retry_delay_seconds(retry))
+        except (httpx.TimeoutException, httpx.TransportError):
+            if retry >= max_retries:
+                raise
+            await asyncio.sleep(_retry_delay_seconds(retry))
+    raise RuntimeError("unreachable provider retry state")
+
+
+def _retryable_status(status_code: int) -> bool:
+    return status_code == 429 or 500 <= status_code < 600
+
+
+def _retry_delay_seconds(retry: int) -> float:
+    return min(2**retry, 5)
 
 
 def parse_provider_model(value: str) -> ProviderModel:
@@ -166,14 +223,30 @@ def llm_service_for(value: str, settings: Settings) -> tuple[str, LLMService]:
             OpenAICompatibleLLMService(
                 base_url="https://api.openai.com/v1",
                 api_key=settings.openai_api_key,
+                timeout_seconds=settings.api_timeout_seconds,
+                max_retries=settings.api_max_retries,
             ),
         )
     if provider_model.provider == "anthropic":
         if not settings.anthropic_api_key:
             raise ProviderDisabledError("ARENA_ANTHROPIC_API_KEY is required")
-        return provider_model.model, AnthropicLLMService(api_key=settings.anthropic_api_key)
+        return (
+            provider_model.model,
+            AnthropicLLMService(
+                api_key=settings.anthropic_api_key,
+                timeout_seconds=settings.api_timeout_seconds,
+                max_retries=settings.api_max_retries,
+            ),
+        )
     if provider_model.provider == "gemini":
         if not settings.gemini_api_key:
             raise ProviderDisabledError("ARENA_GEMINI_API_KEY is required")
-        return provider_model.model, GeminiLLMService(api_key=settings.gemini_api_key)
+        return (
+            provider_model.model,
+            GeminiLLMService(
+                api_key=settings.gemini_api_key,
+                timeout_seconds=settings.api_timeout_seconds,
+                max_retries=settings.api_max_retries,
+            ),
+        )
     raise ProviderDisabledError(f"Unsupported provider: {provider_model.provider}")
