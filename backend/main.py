@@ -32,7 +32,7 @@ from arena_core.reports import export_game_report
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed"]
-OllamaPreset = Literal["strict", "low_creativity", "thinking_if_supported"]
+OllamaPreset = Literal["strict", "low_creativity"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
 
 
@@ -43,6 +43,8 @@ class GameJob(BaseModel):
     black: str
     legality_mode: str
     ollama_preset: OllamaPreset
+    ollama_thinking: bool = False
+    ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode
     max_plies: int | None
     game_id: int | None = None
@@ -64,6 +66,8 @@ class StartGameRequest(BaseModel):
     black: str
     legality_mode: Literal["open", "constrained"] = "constrained"
     ollama_preset: OllamaPreset = "strict"
+    ollama_thinking: bool = False
+    ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode = "legal_list"
     max_plies: int | None = None
     stockfish_path: str | None = None
@@ -85,6 +89,9 @@ class OllamaRuntimeModel(BaseModel):
     name: str
     size_bytes: int | None = None
     size_vram_bytes: int | None = None
+    size_cpu_bytes: int | None = None
+    vram_percent: float | None = None
+    offload_status: str
     processor: str | None = None
     context_window: int | None = None
     expires_at: str | None = None
@@ -293,6 +300,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             black=black,
             legality_mode=payload.legality_mode,
             ollama_preset=payload.ollama_preset,
+            ollama_thinking=payload.ollama_thinking,
+            ollama_cpu_offload=payload.ollama_cpu_offload,
             guidance_mode=payload.guidance_mode,
             max_plies=payload.max_plies,
             created_at=_utcnow_iso(),
@@ -307,6 +316,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 black=black,
                 legality_mode=payload.legality_mode,
                 ollama_preset=payload.ollama_preset,
+                ollama_thinking=payload.ollama_thinking,
+                ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
                 max_plies=payload.max_plies,
                 stockfish_path=payload.stockfish_path,
@@ -652,11 +663,18 @@ async def _ollama_runtime_models(settings: Settings) -> list[OllamaRuntimeModel]
         context_window = item.get("context_length") or item.get("context")
         processor = item.get("processor")
         expires_at = item.get("expires_at")
+        size_bytes = _optional_int(item.get("size"))
+        size_vram_bytes = _optional_int(item.get("size_vram"))
+        size_cpu_bytes = _size_cpu_bytes(size_bytes, size_vram_bytes)
+        vram_percent = _vram_percent(size_bytes, size_vram_bytes)
         models.append(
             OllamaRuntimeModel(
                 name=str(item.get("name") or item.get("model") or "unknown"),
-                size_bytes=_optional_int(item.get("size")),
-                size_vram_bytes=_optional_int(item.get("size_vram")),
+                size_bytes=size_bytes,
+                size_vram_bytes=size_vram_bytes,
+                size_cpu_bytes=size_cpu_bytes,
+                vram_percent=vram_percent,
+                offload_status=_offload_status(size_bytes, size_vram_bytes),
                 processor=(str(processor) if processor is not None else None),
                 context_window=_optional_int(context_window or details.get("context_length")),
                 expires_at=(str(expires_at) if expires_at is not None else None),
@@ -674,6 +692,8 @@ async def _run_game_job(
     black: str,
     legality_mode: str,
     ollama_preset: OllamaPreset,
+    ollama_thinking: bool,
+    ollama_cpu_offload: bool,
     guidance_mode: GuidanceMode,
     max_plies: int | None,
     stockfish_path: str | None,
@@ -683,7 +703,12 @@ async def _run_game_job(
             jobs[job_id] = jobs[job_id].model_copy(update={"game_id": game_id})
 
         result, _attempt_log = await _play_async(
-            settings=_settings_for_ollama_preset(settings, ollama_preset),
+            settings=_settings_for_ollama_options(
+                settings,
+                preset=ollama_preset,
+                thinking=ollama_thinking,
+                cpu_offload=ollama_cpu_offload,
+            ),
             db_url=settings.database_url,
             white_name=white,
             black_name=black,
@@ -715,36 +740,66 @@ async def _run_game_job(
     )
 
 
-def _settings_for_ollama_preset(settings: Settings, preset: OllamaPreset) -> Settings:
+def _settings_for_ollama_options(
+    settings: Settings,
+    *,
+    preset: OllamaPreset,
+    thinking: bool,
+    cpu_offload: bool,
+) -> Settings:
     if preset == "low_creativity":
-        return settings.model_copy(
-            update={
-                "ollama_temperature": 0.2,
-                "ollama_top_p": 0.9,
-                "ollama_num_ctx": 32768,
-                "ollama_num_predict": 128,
-                "ollama_think": "off",
-            }
-        )
-    if preset == "thinking_if_supported":
-        return settings.model_copy(
-            update={
-                "ollama_temperature": 0.2,
-                "ollama_top_p": 0.9,
-                "ollama_num_ctx": 32768,
-                "ollama_num_predict": 512,
-                "ollama_think": "auto",
-            }
-        )
-    return settings.model_copy(
-        update={
+        update = {
+            "ollama_temperature": 0.2,
+            "ollama_top_p": 0.9,
+            "ollama_num_ctx": 32768,
+            "ollama_num_predict": 128,
+        }
+    else:
+        update = {
             "ollama_temperature": 0.0,
             "ollama_top_p": None,
             "ollama_num_ctx": None,
             "ollama_num_predict": None,
-            "ollama_think": "off",
         }
-    )
+
+    if thinking:
+        update["ollama_think"] = "auto"
+        update["ollama_num_predict"] = max(int(update["ollama_num_predict"] or 0), 512)
+        update["ollama_num_ctx"] = update["ollama_num_ctx"] or 32768
+    else:
+        update["ollama_think"] = "off"
+
+    if cpu_offload:
+        update["ollama_num_gpu"] = 40
+        update["ollama_num_ctx"] = min(int(update["ollama_num_ctx"] or 8192), 8192)
+        update["ollama_num_predict"] = update["ollama_num_predict"] or 256
+    else:
+        update["ollama_num_gpu"] = None
+
+    return settings.model_copy(update=update)
+
+
+def _size_cpu_bytes(size_bytes: int | None, size_vram_bytes: int | None) -> int | None:
+    if size_bytes is None or size_vram_bytes is None:
+        return None
+    return max(size_bytes - size_vram_bytes, 0)
+
+
+def _vram_percent(size_bytes: int | None, size_vram_bytes: int | None) -> float | None:
+    if size_bytes is None or size_vram_bytes is None or size_bytes <= 0:
+        return None
+    return min(max((size_vram_bytes / size_bytes) * 100, 0.0), 100.0)
+
+
+def _offload_status(size_bytes: int | None, size_vram_bytes: int | None) -> str:
+    vram_percent = _vram_percent(size_bytes, size_vram_bytes)
+    if vram_percent is None:
+        return "unknown"
+    if vram_percent >= 98:
+        return "gpu"
+    if vram_percent <= 2:
+        return "cpu"
+    return "mixed"
 
 
 async def _all_summaries(

@@ -402,9 +402,14 @@ function RuntimePanel({
       <div className="panel-heading">
         <div>
           <p className="eyebrow">Live Telemetry</p>
-          <h3>Model Runtime</h3>
+          <h3>Runtime Monitor</h3>
         </div>
         <span className="runtime-sample">{telemetry ? relativeSampleTime(telemetry.sampled_at) : "waiting"}</span>
+      </div>
+
+      <div className="runtime-group-heading">
+        <p className="eyebrow">Per-Model Metrics</p>
+        <span>Tracked separately for white and black.</span>
       </div>
 
       <div className="model-runtime-grid">
@@ -426,9 +431,14 @@ function RuntimePanel({
         />
       </div>
 
+      <div className="runtime-group-heading system">
+        <p className="eyebrow">Shared System Runtime</p>
+        <span>GPU load and Ollama residency are shared by all local models.</span>
+      </div>
+
       <div className="runtime-sections">
         <div>
-          <h4>Global GPU / VRAM</h4>
+          <h4>GPU / VRAM Total</h4>
           {telemetry?.gpus.length ? (
             <div className="resource-list">
               {telemetry.gpus.map((gpu) => (
@@ -448,14 +458,14 @@ function RuntimePanel({
         </div>
 
         <div>
-          <h4>Runtime Residency</h4>
+          <h4>Loaded Models</h4>
           {telemetry?.ollama_models.length ? (
             <div className="runtime-model-list">
               {telemetry.ollama_models.map((model) => (
                 <div key={model.name} className="runtime-model-row">
                   <strong>{model.name}</strong>
                   <span>
-                    {bytesLabel(model.size_vram_bytes ?? model.size_bytes)}
+                    {residencyLabel(model)}
                     {model.processor ? ` · ${model.processor}` : ""}
                     {model.context_window ? ` · ctx ${model.context_window}` : ""}
                   </span>
@@ -501,7 +511,7 @@ function PlayerRuntimeCard({
         <span className="color-swatch" />
         <div>
           <strong>{name}</strong>
-          <span>{color}</span>
+          <span>{color} model</span>
         </div>
         <span className={`status-pill ${status}`}>{status}</span>
       </div>
@@ -522,9 +532,11 @@ function PlayerRuntimeCard({
         <dt>Invalid attempts</dt>
         <dd>{stats.invalidAttempts}</dd>
         <dt>Residency</dt>
-        <dd>{residentModel ? "resident" : "not resident"}</dd>
+        <dd>{residentModel ? residencyStatusLabel(residentModel.offload_status) : "not resident"}</dd>
         <dt>VRAM</dt>
-        <dd>{residentModel ? bytesLabel(residentModel.size_vram_bytes ?? residentModel.size_bytes) : "—"}</dd>
+        <dd>{residentModel ? bytesLabel(residentModel.size_vram_bytes) : "—"}</dd>
+        <dt>CPU</dt>
+        <dd>{residentModel ? bytesLabel(residentModel.size_cpu_bytes) : "—"}</dd>
         <dt>Processor</dt>
         <dd>{residentModel?.processor ?? "—"}</dd>
       </dl>
@@ -761,6 +773,8 @@ function StartGamePanel({
   const [black, setBlack] = useState<string | null>(null);
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
   const [ollamaPreset, setOllamaPreset] = useState<OllamaPreset>("strict");
+  const [ollamaThinking, setOllamaThinking] = useState(false);
+  const [ollamaCpuOffload, setOllamaCpuOffload] = useState(false);
   const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>("legal_list");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
@@ -783,74 +797,100 @@ function StartGamePanel({
             black: selectedBlack,
             legality_mode: legalityMode,
             ollama_preset: ollamaPreset,
+            ollama_thinking: ollamaThinking,
+            ollama_cpu_offload: ollamaCpuOffload,
             guidance_mode: guidanceMode,
             max_plies: maxPlies ? Number(maxPlies) : null,
           });
         }}
       >
-        <label>
-          <span>White</span>
-          <ModelInput
-            value={selectedWhite}
-            options={modelOptions}
-            disabled={submitting}
-            onChange={setWhite}
-          />
-        </label>
-        <label>
-          <span>Guidance</span>
-          <select
-            value={guidanceMode}
-            disabled={submitting}
-            onChange={(event) => setGuidanceMode(event.target.value as GuidanceMode)}
-          >
-            <option value="legal_list">Legal move list</option>
-            <option value="strategic_memory">Strategic memory</option>
-          </select>
-        </label>
-        <label>
-          <span>Ollama preset</span>
-          <select
-            value={ollamaPreset}
-            disabled={submitting}
-            onChange={(event) => setOllamaPreset(event.target.value as OllamaPreset)}
-          >
-            <option value="strict">Strict deterministic</option>
-            <option value="low_creativity">Low creativity</option>
-            <option value="thinking_if_supported">Thinking if supported</option>
-          </select>
-        </label>
-        <label>
-          <span>Black</span>
-          <ModelInput
-            value={selectedBlack}
-            options={modelOptions}
-            disabled={submitting}
-            onChange={setBlack}
-          />
-        </label>
-        <label>
-          <span>Legality</span>
-          <select
-            value={legalityMode}
-            disabled={submitting}
-            onChange={(event) => setLegalityMode(event.target.value as "open" | "constrained")}
-          >
-            <option value="constrained">Legal move list</option>
-            <option value="open">Open</option>
-          </select>
-        </label>
-        <label>
-          <span>Max plies</span>
-          <input
-            type="number"
-            min="1"
-            value={maxPlies}
-            placeholder="No limit"
-            disabled={submitting}
-            onChange={(event) => setMaxPlies(event.target.value)}
-          />
-        </label>
+        <fieldset className="start-game-group">
+          <legend>Player Models</legend>
+          <label>
+            <span>White model</span>
+            <ModelInput
+              value={selectedWhite}
+              options={modelOptions}
+              disabled={submitting}
+              onChange={setWhite}
+            />
+          </label>
+          <label>
+            <span>Black model</span>
+            <ModelInput
+              value={selectedBlack}
+              options={modelOptions}
+              disabled={submitting}
+              onChange={setBlack}
+            />
+          </label>
+        </fieldset>
+
+        <fieldset className="start-game-group shared">
+          <legend>Shared Game Settings</legend>
+          <label>
+            <span>Prompt help for both</span>
+            <select
+              value={guidanceMode}
+              disabled={submitting}
+              onChange={(event) => setGuidanceMode(event.target.value as GuidanceMode)}
+            >
+              <option value="legal_list">Show legal moves</option>
+              <option value="strategic_memory">Strategic memory</option>
+            </select>
+          </label>
+          <label>
+            <span>Sampling preset for both</span>
+            <select
+              value={ollamaPreset}
+              disabled={submitting}
+              onChange={(event) => setOllamaPreset(event.target.value as OllamaPreset)}
+            >
+              <option value="strict">Strict deterministic</option>
+              <option value="low_creativity">Low creativity</option>
+            </select>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={ollamaThinking}
+              disabled={submitting}
+              onChange={(event) => setOllamaThinking(event.target.checked)}
+            />
+            <span>Thinking for supported models</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={ollamaCpuOffload}
+              disabled={submitting}
+              onChange={(event) => setOllamaCpuOffload(event.target.checked)}
+            />
+            <span>CPU offload for large models</span>
+          </label>
+          <label>
+            <span>Move validation for both</span>
+            <select
+              value={legalityMode}
+              disabled={submitting}
+              onChange={(event) => setLegalityMode(event.target.value as "open" | "constrained")}
+            >
+              <option value="constrained">Reject illegal moves</option>
+              <option value="open">Record raw model moves</option>
+            </select>
+          </label>
+          <label>
+            <span>Max plies for game</span>
+            <input
+              type="number"
+              min="1"
+              value={maxPlies}
+              placeholder="No limit"
+              disabled={submitting}
+              onChange={(event) => setMaxPlies(event.target.value)}
+            />
+          </label>
+        </fieldset>
         <button className="primary-button" type="submit" disabled={submitting || !selectedWhite || !selectedBlack}>
           {submitting ? "Starting" : "Start game"}
         </button>
@@ -864,7 +904,7 @@ function StartGamePanel({
               <span>
                 {job.white} vs {job.black}
               </span>
-              <strong>{job.guidance_mode} · {job.ollama_preset} · {jobLabel(job)}</strong>
+              <strong>{job.guidance_mode} · {ollamaJobOptions(job)} · {jobLabel(job)}</strong>
             </div>
           ))}
         </div>
@@ -903,6 +943,17 @@ function jobLabel(job: GameJob) {
     return job.error ?? "failed";
   }
   return job.game_id ? `Game ${job.game_id}` : "completed";
+}
+
+function ollamaJobOptions(job: GameJob) {
+  const options: string[] = [job.ollama_preset];
+  if (job.ollama_thinking) {
+    options.push("thinking");
+  }
+  if (job.ollama_cpu_offload) {
+    options.push("cpu offload");
+  }
+  return options.join(" + ");
 }
 
 function PlyControls({
@@ -1417,6 +1468,34 @@ function bytesLabel(value: number | null | undefined) {
     return `${gib.toFixed(1)} GB`;
   }
   return `${(value / 1024 ** 2).toFixed(0)} MB`;
+}
+
+function residencyLabel(model: {
+  size_vram_bytes: number | null;
+  size_cpu_bytes: number | null;
+  vram_percent: number | null;
+  offload_status: string;
+}) {
+  const status = residencyStatusLabel(model.offload_status);
+  const percent = model.vram_percent === null ? "" : ` · ${model.vram_percent.toFixed(0)}% VRAM`;
+  const cpu =
+    model.size_cpu_bytes !== null && model.size_cpu_bytes > 0
+      ? ` · CPU ${bytesLabel(model.size_cpu_bytes)}`
+      : "";
+  return `${status} · VRAM ${bytesLabel(model.size_vram_bytes)}${cpu}${percent}`;
+}
+
+function residencyStatusLabel(status: string) {
+  if (status === "gpu") {
+    return "GPU resident";
+  }
+  if (status === "mixed") {
+    return "CPU offload";
+  }
+  if (status === "cpu") {
+    return "CPU only";
+  }
+  return "resident";
 }
 
 function relativeSampleTime(sampledAt: string) {

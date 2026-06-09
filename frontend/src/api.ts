@@ -155,6 +155,8 @@ export type GameJob = {
   black: string;
   legality_mode: string;
   ollama_preset: OllamaPreset;
+  ollama_thinking: boolean;
+  ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
   max_plies: number | null;
   game_id: number | null;
@@ -165,7 +167,7 @@ export type GameJob = {
   completed_at: string | null;
 };
 
-export type OllamaPreset = "strict" | "low_creativity" | "thinking_if_supported";
+export type OllamaPreset = "strict" | "low_creativity";
 export type GuidanceMode = "legal_list" | "strategic_memory";
 
 export type StartGamePayload = {
@@ -173,6 +175,8 @@ export type StartGamePayload = {
   black: string;
   legality_mode: "open" | "constrained";
   ollama_preset: OllamaPreset;
+  ollama_thinking: boolean;
+  ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
   max_plies: number | null;
 };
@@ -188,6 +192,9 @@ export type OllamaRuntimeModel = {
   name: string;
   size_bytes: number | null;
   size_vram_bytes: number | null;
+  size_cpu_bytes: number | null;
+  vram_percent: number | null;
+  offload_status: string;
   processor: string | null;
   context_window: number | null;
   expires_at: string | null;

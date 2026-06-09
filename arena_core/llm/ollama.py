@@ -29,6 +29,7 @@ class OllamaLLMService(LLMService):
         top_p: float | None = None,
         num_ctx: int | None = None,
         num_predict: int | None = None,
+        num_gpu: int | None = None,
         think: str = "off",
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -37,6 +38,7 @@ class OllamaLLMService(LLMService):
         self._top_p = top_p
         self._num_ctx = num_ctx
         self._num_predict = num_predict
+        self._num_gpu = num_gpu
         self._think = think
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
@@ -47,6 +49,8 @@ class OllamaLLMService(LLMService):
             options["num_ctx"] = self._num_ctx
         if self._num_predict is not None:
             options["num_predict"] = self._num_predict
+        if self._num_gpu is not None:
+            options["num_gpu"] = self._num_gpu
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(

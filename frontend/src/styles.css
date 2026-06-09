@@ -223,7 +223,30 @@ h4 {
 
 .start-game-form {
   display: grid;
+  gap: 12px;
+}
+
+.start-game-group {
+  display: grid;
   gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #e3ded4;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.start-game-group.shared {
+  background: #f5f4f0;
+}
+
+.start-game-group legend {
+  padding: 0 6px;
+  color: #1e6b58;
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .start-game-form label {
@@ -233,6 +256,28 @@ h4 {
   font-size: 0.78rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.start-game-form .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid #d8d2c5;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.start-game-form .checkbox-row input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: #1e6b58;
+}
+
+.start-game-form .checkbox-row span {
+  color: #27332e;
 }
 
 .start-game-form input,
@@ -711,11 +756,40 @@ h4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.runtime-group-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #e3ded4;
+}
+
+.runtime-group-heading:first-of-type {
+  border-top: 0;
+}
+
+.runtime-group-heading p {
+  margin: 0;
+}
+
+.runtime-group-heading span {
+  color: #68756f;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.runtime-group-heading.system {
+  margin-top: 8px;
+}
+
 .model-runtime-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin: 18px 0;
+  margin: 10px 0 18px;
 }
 
 .model-runtime-card {
@@ -806,6 +880,7 @@ h4 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+  margin-top: 10px;
 }
 
 .resource-list,
