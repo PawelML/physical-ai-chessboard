@@ -60,7 +60,7 @@ arena_core/
   engine.py        ArenaGame move loop; MoveSource Protocol (the embodied-phase seam):
                    RandomMoveSource, StaticMoveSource, LLMMoveSource, StockfishMoveSource
   prompts.py       versioned templates, {strict,reasoning} × {open,constrained} legality modes
-  parser.py        extract UCI move from raw model JSON
+  parser.py        extract the move string (SAN or UCI) from raw model JSON
   move_sources.py  source resolution helpers
   llm/             LLMService ABC -> LLMResponse; OpenAICompatible(Ollama), Anthropic, Gemini
   evaluators/      Stockfish UCI wrapper (fixed nodes, pinned binary) -> CPL, classification
@@ -89,8 +89,13 @@ frontend/src/      App.tsx, api.ts, chess.ts (TanStack Query)
   (legal moves provided). On any *retry*, legal moves are always provided regardless
   of mode.
 - **Prompt versioning is mandatory.** Every template change bumps `prompt_version`
-  (currently `strict-v4` in `config.py`) and `template_hash`, both stored per attempt.
+  (currently `strict-v6` in `config.py`) and `template_hash`, both stored per attempt.
   Comparisons across prompt versions must be explicit.
+- **Move contract is SAN, with UCI fallback.** The strict prompt asks for SAN
+  (`{"move":"e4"}`) and states the win objective; `engine._coerce_move` tries
+  `board.parse_san` first, then `chess.Move.from_uci`, so either format is accepted.
+  Legal-move lists (constrained mode + retry feedback) are SAN. `moves` always stores
+  both `accepted_san` and `accepted_uci` regardless of what the model emitted.
 - **Leaderboard rows key on an immutable `model_snapshot`**, never a display name —
   the snapshot fingerprints quantization, context window, sampler params, runtime
   version. Aggregates live in `game_summaries`; rebuild via `rebuild-summaries` after
@@ -108,6 +113,12 @@ flag-gated behind `ARENA_API_PROVIDERS_ENABLED`; v1 runs local-only. Ollama runt
 knobs (temperature, num_ctx, num_gpu, CPU-offload layers, think mode, VRAM budget)
 are all `ARENA_OLLAMA_*` settings — see `config.py`. The backend exposes presets
 (`strict`/`low_creativity`) and guidance modes (`legal_list`/`strategic_memory`).
+
+Gotchas: `think="auto"` only requests thinking for models whose name contains
+`qwen`, and Ollama **silently disables** thinking for models that don't support it
+(e.g. quantized `-ud` builds) — `attempts.thinking_used` records whether it actually
+happened. A cold load of a large model can take >100s, so `ollama_timeout_seconds`
+defaults to 600; a timeout raises a clear `OllamaServiceError`, not an empty one.
 
 ## Conventions
 
