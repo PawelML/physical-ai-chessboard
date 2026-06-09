@@ -146,7 +146,7 @@ export type ModelOption = {
   provider: string;
 };
 
-export type GameJobStatus = "running" | "completed" | "failed";
+export type GameJobStatus = "running" | "completed" | "failed" | "cancelled";
 
 export type GameJob = {
   id: string;
@@ -300,6 +300,10 @@ export function fetchGameJobs(): Promise<GameJob[]> {
 
 export function startGame(payload: StartGamePayload): Promise<{ job_id: string; status: string }> {
   return postJson<{ job_id: string; status: string }>("/games/start", payload);
+}
+
+export function cancelGameJob(jobId: string): Promise<{ job_id: string; status: GameJobStatus }> {
+  return postJson<{ job_id: string; status: GameJobStatus }>(`/games/jobs/${jobId}/cancel`, {});
 }
 
 export function fetchGameDefaults(): Promise<GameDefaults> {

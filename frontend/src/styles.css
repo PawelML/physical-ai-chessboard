@@ -371,6 +371,8 @@ h4 {
 
 .job-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 3px;
   padding: 9px 10px;
   border-radius: 7px;
@@ -379,8 +381,14 @@ h4 {
   font-size: 0.82rem;
 }
 
-.job-row span,
-.job-row strong {
+.job-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.job-row > div span,
+.job-row > div strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -394,6 +402,25 @@ h4 {
 .job-row.failed {
   background: #f7dddd;
   color: #8b2323;
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #9f2d2d;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #9f2d2d;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .replay-grid {

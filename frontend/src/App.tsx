@@ -7,6 +7,7 @@ import {
   RefreshCcw,
   SkipBack,
   SkipForward,
+  Square,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -20,6 +21,7 @@ import {
 } from "recharts";
 
 import {
+  cancelGameJob,
   fetchGame,
   fetchGameJobs,
   fetchGames,
@@ -124,6 +126,21 @@ export default function App() {
       void refetchJobs();
       void refetchGames();
       selectGameWhenJobStarts(response.job_id);
+    },
+  });
+
+  const cancelGameMutation = useMutation({
+    mutationFn: cancelGameJob,
+    onSuccess: (response) => {
+      if (response.job_id === activeLiveJobId) {
+        setActiveLiveJobId(null);
+      }
+      setIsPlaying(false);
+      void refetchJobs();
+      void refetchGames();
+      if (effectiveGameId !== null) {
+        void refetchGame();
+      }
     },
   });
 
@@ -239,6 +256,8 @@ export default function App() {
             submitting={startGameMutation.isPending}
             error={startGameMutation.error}
             onSubmit={(payload) => startGameMutation.mutate(payload)}
+            cancellingJobId={cancelGameMutation.isPending ? cancelGameMutation.variables : null}
+            onCancel={(jobId) => cancelGameMutation.mutate(jobId)}
           />
         ) : (
           <GameList
@@ -777,6 +796,8 @@ function StartGamePanel({
   submitting,
   error,
   onSubmit,
+  cancellingJobId,
+  onCancel,
 }: {
   modelOptions: ModelOption[];
   jobs: GameJob[];
@@ -784,6 +805,8 @@ function StartGamePanel({
   submitting: boolean;
   error: Error | null;
   onSubmit: (payload: StartGamePayload) => void;
+  cancellingJobId: string | null | undefined;
+  onCancel: (jobId: string) => void;
 }) {
   const ollamaOptions = modelOptions.filter((option) => option.provider === "ollama");
   const defaultWhite = ollamaOptions[0]?.id ?? modelOptions[0]?.id ?? "random";
@@ -1033,10 +1056,23 @@ function StartGamePanel({
         <div className="job-list">
           {recentJobs.map((job) => (
             <div key={job.id} className={`job-row ${job.status}`}>
-              <span>
-                {job.white} vs {job.black}
-              </span>
-              <strong>{job.guidance_mode} · {ollamaJobOptions(job)} · {jobLabel(job)}</strong>
+              <div>
+                <span>
+                  {job.white} vs {job.black}
+                </span>
+                <strong>{job.guidance_mode} · {ollamaJobOptions(job)} · {jobLabel(job)}</strong>
+              </div>
+              {job.status === "running" && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={cancellingJobId === job.id}
+                  onClick={() => onCancel(job.id)}
+                >
+                  <Square size={14} />
+                  <span>{cancellingJobId === job.id ? "Ending" : "End"}</span>
+                </button>
+              )}
             </div>
           ))}
         </div>

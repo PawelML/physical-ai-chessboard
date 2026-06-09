@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -32,7 +32,7 @@ from arena_core.persistence.models import (
 from arena_core.reports import export_game_report
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
-GameJobStatus = Literal["running", "completed", "failed"]
+GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
 
 GAME_DEFAULTS_KEY = "game_defaults"
@@ -93,6 +93,12 @@ class StartGameRequest(BaseModel):
 class StartGameResponse(BaseModel):
     job_id: str
     status: GameJobStatus
+
+
+class CancelGameResponse(BaseModel):
+    job_id: str
+    status: GameJobStatus
+    game_id: int | None = None
 
 
 class GpuTelemetry(BaseModel):
@@ -269,6 +275,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     session_factory = create_session_factory(effective_settings.database_url)
     api = FastAPI(title="Physical AI Chessboard Arena")
     game_jobs: dict[str, GameJob] = {}
+    game_tasks: dict[str, asyncio.Task[None]] = {}
 
     @api.get("/health")
     async def health() -> dict[str, str]:
@@ -319,8 +326,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @api.post("/games/start")
     async def start_game(payload: StartGameRequest) -> StartGameResponse:
-        from fastapi import HTTPException
-
         white = payload.white.strip()
         black = payload.black.strip()
         if not white or not black:
@@ -346,10 +351,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             created_at=_utcnow_iso(),
         )
         game_jobs[job_id] = job
-        asyncio.create_task(
+        game_tasks[job_id] = asyncio.create_task(
             _run_game_job(
                 job_id=job_id,
                 jobs=game_jobs,
+                tasks=game_tasks,
+                session_factory=session_factory,
                 settings=effective_settings,
                 white=white,
                 black=black,
@@ -368,6 +375,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         return StartGameResponse(job_id=job_id, status="running")
+
+    @api.post("/games/jobs/{job_id}/cancel")
+    async def cancel_game_job(job_id: str) -> CancelGameResponse:
+        job = game_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="game job not found")
+        if job.status != "running":
+            return CancelGameResponse(job_id=job.id, status=job.status, game_id=job.game_id)
+
+        if job.game_id is not None:
+            await _mark_game_cancelled(session_factory, game_id=job.game_id)
+        game_jobs[job_id] = job.model_copy(
+            update={
+                "status": "cancelled",
+                "termination_reason": "aborted_by_user",
+                "completed_at": _utcnow_iso(),
+            }
+        )
+        task = game_tasks.get(job_id)
+        if task is not None:
+            task.cancel()
+        return CancelGameResponse(job_id=job_id, status="cancelled", game_id=job.game_id)
 
     @api.get("/games")
     async def list_games() -> list[GameListItem]:
@@ -732,6 +761,8 @@ async def _run_game_job(
     *,
     job_id: str,
     jobs: dict[str, GameJob],
+    tasks: dict[str, asyncio.Task[None]],
+    session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     white: str,
     black: str,
@@ -764,6 +795,19 @@ async def _run_game_job(
             commit_after_each_ply=True,
             on_game_started=mark_game_started,
         )
+    except asyncio.CancelledError:
+        job = jobs.get(job_id)
+        if job is not None:
+            if job.game_id is not None:
+                await _mark_game_cancelled(session_factory, game_id=job.game_id)
+            jobs[job_id] = job.model_copy(
+                update={
+                    "status": "cancelled",
+                    "termination_reason": "aborted_by_user",
+                    "completed_at": job.completed_at or _utcnow_iso(),
+                }
+            )
+        raise
     except Exception as exc:
         jobs[job_id] = jobs[job_id].model_copy(
             update={
@@ -773,16 +817,32 @@ async def _run_game_job(
             }
         )
         return
+    finally:
+        tasks.pop(job_id, None)
 
-    jobs[job_id] = jobs[job_id].model_copy(
-        update={
-            "status": "completed",
-            "game_id": result.game_id,
-            "result": result.result,
-            "termination_reason": result.termination_reason,
-            "completed_at": _utcnow_iso(),
-        }
-    )
+    if jobs[job_id].status == "running":
+        jobs[job_id] = jobs[job_id].model_copy(
+            update={
+                "status": "completed",
+                "game_id": result.game_id,
+                "result": result.result,
+                "termination_reason": result.termination_reason,
+                "completed_at": _utcnow_iso(),
+            }
+        )
+
+
+async def _mark_game_cancelled(
+    session_factory: async_sessionmaker[AsyncSession], *, game_id: int
+) -> None:
+    async with session_factory() as session:
+        async with session.begin():
+            game = await session.get(Game, game_id)
+            if game is None or game.ended_at is not None:
+                return
+            game.result = "*"
+            game.termination_reason = "aborted_by_user"
+            game.ended_at = datetime.now(UTC)
 
 
 def _settings_for_ollama_options(
