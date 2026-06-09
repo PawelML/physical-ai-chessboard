@@ -182,6 +182,15 @@ class ArenaGame:
                     break
             else:
                 termination_reason = self._termination_reason()
+        except Exception:
+            if commit_after_each_ply:
+                game_row.result = "*"
+                game_row.termination_reason = "error"
+                game_row.final_fen = self.board.fen()
+                game_row.pgn = self._export_pgn("*")
+                game_row.ended_at = models.utcnow()
+                await session.commit()
+            raise
         finally:
             _close_if_present(self.white)
             if self.black is not self.white:

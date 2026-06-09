@@ -9,7 +9,7 @@ from arena_core.leaderboards import rebuild_game_summaries
 from arena_core.llm.base import LLMResponse, LLMService
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.tournaments import TournamentConfig, run_tournament
-from backend.main import _game_stream_payload, create_app
+from backend.main import _game_stream_payload, _settings_for_ollama_options, create_app
 
 
 class StubLLMService(LLMService):
@@ -118,3 +118,16 @@ async def test_backend_builds_game_stream_snapshots(tmp_path: Path) -> None:
 
     assert payload["games"]
     assert payload["games"][0]["id"] == result.game_id
+
+
+def test_cpu_offload_uses_configured_mixed_ollama_setting() -> None:
+    settings = _settings_for_ollama_options(
+        Settings(ollama_cpu_offload_gpu_layers=18),
+        preset="strict",
+        thinking=False,
+        cpu_offload=True,
+    )
+
+    assert settings.ollama_num_gpu == 18
+    assert settings.ollama_num_ctx == 8192
+    assert settings.ollama_num_predict == 256

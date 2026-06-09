@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     ollama_num_ctx: int | None = Field(default=None, gt=0)
     ollama_num_predict: int | None = Field(default=None, gt=0)
     ollama_num_gpu: int | None = Field(default=None, ge=0)
+    ollama_cpu_offload_gpu_layers: int = Field(default=48, ge=1)
+    ollama_cpu_offload_min_gpu_layers: int = Field(default=8, ge=0)
     ollama_think: str = "off"
     api_providers_enabled: bool = False
     openai_api_key: str | None = None

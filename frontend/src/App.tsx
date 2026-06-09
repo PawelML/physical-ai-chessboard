@@ -866,7 +866,7 @@ function StartGamePanel({
               disabled={submitting}
               onChange={(event) => setOllamaCpuOffload(event.target.checked)}
             />
-            <span>CPU offload for large models</span>
+            <span>Mixed GPU/CPU offload for large models</span>
           </label>
           <label>
             <span>Move validation for both</span>
@@ -951,7 +951,7 @@ function ollamaJobOptions(job: GameJob) {
     options.push("thinking");
   }
   if (job.ollama_cpu_offload) {
-    options.push("cpu offload");
+    options.push("mixed offload");
   }
   return options.join(" + ");
 }
@@ -1490,7 +1490,7 @@ function residencyStatusLabel(status: string) {
     return "GPU resident";
   }
   if (status === "mixed") {
-    return "CPU offload";
+    return "Mixed offload";
   }
   if (status === "cpu") {
     return "CPU only";

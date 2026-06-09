@@ -770,7 +770,7 @@ def _settings_for_ollama_options(
         update["ollama_think"] = "off"
 
     if cpu_offload:
-        update["ollama_num_gpu"] = 40
+        update["ollama_num_gpu"] = settings.ollama_cpu_offload_gpu_layers
         update["ollama_num_ctx"] = min(int(update["ollama_num_ctx"] or 8192), 8192)
         update["ollama_num_predict"] = update["ollama_num_predict"] or 256
     else:

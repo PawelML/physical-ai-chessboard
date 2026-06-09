@@ -150,6 +150,7 @@ def llm_service_for(value: str, settings: Settings) -> tuple[str, LLMService]:
                 num_ctx=settings.ollama_num_ctx,
                 num_predict=settings.ollama_num_predict,
                 num_gpu=settings.ollama_num_gpu,
+                min_num_gpu=settings.ollama_cpu_offload_min_gpu_layers,
                 think=settings.ollama_think,
             ),
         )

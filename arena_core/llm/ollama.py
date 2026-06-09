@@ -6,6 +6,10 @@ import httpx
 from arena_core.llm.base import LLMResponse, LLMService
 
 
+class OllamaServiceError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class OllamaModelMetadata:
     name: str
@@ -30,6 +34,7 @@ class OllamaLLMService(LLMService):
         num_ctx: int | None = None,
         num_predict: int | None = None,
         num_gpu: int | None = None,
+        min_num_gpu: int | None = None,
         think: str = "off",
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -39,7 +44,9 @@ class OllamaLLMService(LLMService):
         self._num_ctx = num_ctx
         self._num_predict = num_predict
         self._num_gpu = num_gpu
+        self._min_num_gpu = min_num_gpu
         self._think = think
+        self._working_num_gpu = num_gpu
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
         options: dict[str, float | int] = {"temperature": self._temperature}
@@ -52,34 +59,73 @@ class OllamaLLMService(LLMService):
         if self._num_gpu is not None:
             options["num_gpu"] = self._num_gpu
 
+        request_payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "think": self._should_think(model),
+            "options": options,
+        }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                f"{self._base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "think": self._should_think(model),
-                    "options": options,
-                },
-            )
-            response.raise_for_status()
-        payload = response.json()
-        content = str(payload.get("response") or payload.get("thinking") or "")
-        prompt_eval_count = payload.get("prompt_eval_count")
-        eval_count = payload.get("eval_count")
+            response = None
+            for candidate_num_gpu in self._num_gpu_candidates():
+                if candidate_num_gpu is None:
+                    options.pop("num_gpu", None)
+                else:
+                    options["num_gpu"] = candidate_num_gpu
+                response = await self._post_generate(client, request_payload)
+                if _is_gpu_memory_error_response(response) and candidate_num_gpu not in {
+                    None,
+                    0,
+                }:
+                    continue
+                self._working_num_gpu = candidate_num_gpu
+                break
+            if response is None:
+                raise OllamaServiceError("Ollama generate failed: no request was attempted")
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise OllamaServiceError(_ollama_error_message(exc.response)) from exc
+        response_payload = response.json()
+        content = str(response_payload.get("response") or response_payload.get("thinking") or "")
+        prompt_eval_count = response_payload.get("prompt_eval_count")
+        eval_count = response_payload.get("eval_count")
         total_tokens = None
         if prompt_eval_count is not None and eval_count is not None:
             total_tokens = prompt_eval_count + eval_count
         return LLMResponse(
             content=content,
-            stop_reason="done" if payload.get("done") else None,
-            raw_response=payload,
+            stop_reason="done" if response_payload.get("done") else None,
+            raw_response=response_payload,
             prompt_tokens=prompt_eval_count,
             completion_tokens=eval_count,
             total_tokens=total_tokens,
         )
+
+    async def _post_generate(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, object],
+    ) -> httpx.Response:
+        response = await client.post(f"{self._base_url}/api/generate", json=payload)
+        if _is_unsupported_thinking_response(response) and payload["think"]:
+            payload["think"] = False
+            response = await client.post(f"{self._base_url}/api/generate", json=payload)
+        return response
+
+    def _num_gpu_candidates(self) -> list[int | None]:
+        if self._num_gpu is None:
+            return [None]
+        if self._working_num_gpu is not None and self._working_num_gpu != self._num_gpu:
+            return [self._working_num_gpu]
+        minimum = self._min_num_gpu if self._min_num_gpu is not None else 0
+        minimum = min(minimum, self._num_gpu)
+        candidates = list(range(self._num_gpu, max(minimum, 1) - 1, -8))
+        if minimum == 0 and 0 not in candidates:
+            candidates.append(0)
+        return candidates
 
     def _should_think(self, model: str) -> bool:
         if self._think == "on":
@@ -87,6 +133,48 @@ class OllamaLLMService(LLMService):
         if self._think == "auto":
             return "qwen" in model.lower()
         return False
+
+
+def _ollama_error_message(response: httpx.Response) -> str:
+    detail = response.text.strip()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+        detail = payload["error"].strip()
+    if detail:
+        return f"Ollama generate failed ({response.status_code}): {detail}"
+    return f"Ollama generate failed ({response.status_code})"
+
+
+def _is_unsupported_thinking_response(response: httpx.Response) -> bool:
+    if response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return isinstance(error, str) and "does not support thinking" in error
+
+
+def _is_gpu_memory_error_response(response: httpx.Response) -> bool:
+    if response.status_code < 500:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        error = response.text
+    else:
+        raw_error = payload.get("error") if isinstance(payload, dict) else None
+        error = raw_error if isinstance(raw_error, str) else response.text
+    normalized = error.lower()
+    return (
+        ("cuda" in normalized and "out of memory" in normalized)
+        or "memory layout cannot be allocated" in normalized
+        or "failed to allocate" in normalized
+    )
 
 
 async def fetch_ollama_model_metadata(
