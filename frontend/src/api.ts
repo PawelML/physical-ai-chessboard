@@ -151,6 +151,7 @@ export type GameJobStatus = "running" | "completed" | "failed" | "cancelled";
 export type GameJob = {
   id: string;
   status: GameJobStatus;
+  kind: "game" | "stockfish_match";
   white: string;
   black: string;
   legality_mode: string;
@@ -162,6 +163,11 @@ export type GameJob = {
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
   max_plies: number | null;
+  stockfish_level: StockfishLevel | null;
+  games_requested: number | null;
+  games_completed: number;
+  run_id: number | null;
+  game_ids: number[];
   game_id: number | null;
   result: string | null;
   termination_reason: string | null;
@@ -171,6 +177,8 @@ export type GameJob = {
 };
 
 export type GuidanceMode = "legal_list" | "strategic_memory";
+
+export type StockfishLevel = "beginner" | "club";
 
 export type GameDefaults = {
   temperature: number;
@@ -182,6 +190,21 @@ export type GameDefaults = {
 export type StartGamePayload = {
   white: string;
   black: string;
+  legality_mode: "open" | "constrained";
+  temperature: number;
+  top_p: number | null;
+  num_ctx: number | null;
+  num_predict: number | null;
+  ollama_thinking: boolean;
+  ollama_cpu_offload: boolean;
+  guidance_mode: GuidanceMode;
+  max_plies: number | null;
+};
+
+export type StartStockfishMatchPayload = {
+  model: string;
+  stockfish_level: StockfishLevel;
+  game_count: number;
   legality_mode: "open" | "constrained";
   temperature: number;
   top_p: number | null;
@@ -300,6 +323,12 @@ export function fetchGameJobs(): Promise<GameJob[]> {
 
 export function startGame(payload: StartGamePayload): Promise<{ job_id: string; status: string }> {
   return postJson<{ job_id: string; status: string }>("/games/start", payload);
+}
+
+export function startStockfishMatch(
+  payload: StartStockfishMatchPayload,
+): Promise<{ job_id: string; status: string }> {
+  return postJson<{ job_id: string; status: string }>("/matches/stockfish/start", payload);
 }
 
 export function cancelGameJob(jobId: string): Promise<{ job_id: string; status: GameJobStatus }> {

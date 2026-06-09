@@ -1,9 +1,10 @@
 import json
 import random
 import subprocess
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from hashlib import sha256
+from inspect import isawaitable
 
 import chess
 from sqlalchemy import select
@@ -36,9 +37,11 @@ class TournamentConfig:
     competitor_b: str
     legality_mode: LegalityMode = "open"
     max_plies: int | None = None
+    game_count: int | None = None
     seed: int = 0
     suite_name: str = "starter"
     suite_version: str = "v1"
+    strategic_memory: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,9 @@ async def run_tournament(
     settings: Settings,
     source_factory: SourceFactory,
     evaluator: MoveEvaluator | None = None,
+    commit_after_each_ply: bool = False,
+    on_game_started: Callable[[int, int], Awaitable[None] | None] | None = None,
+    on_game_completed: Callable[[int, int], Awaitable[None] | None] | None = None,
 ) -> TournamentResult:
     random.seed(config.seed)
     suite, opening_lines = await ensure_opening_suite(
@@ -125,29 +131,52 @@ async def run_tournament(
         competitor_b=config.competitor_b,
         settings=settings,
     )
+    if commit_after_each_ply:
+        await session.commit()
 
     game_ids: list[int] = []
     try:
-        for line in opening_lines:
-            for white_name, black_name, white_participant, black_participant in (
-                (config.competitor_a, config.competitor_b, participant_a, participant_b),
-                (config.competitor_b, config.competitor_a, participant_b, participant_a),
-            ):
-                board = board_from_move_sequence(line.move_sequence or "")
-                result = await ArenaGame(
-                    white=source_factory(white_name),
-                    black=source_factory(black_name),
-                    settings=settings,
-                    legality_mode=config.legality_mode,
-                    max_plies=config.max_plies,
-                    evaluator=evaluator,
-                    initial_board=board,
-                    run_id=run.id,
-                    white_participant_id=white_participant.id,
-                    black_participant_id=black_participant.id,
-                    opening_line_id=line.id,
-                ).run(session)
-                game_ids.append(result.game_id)
+        for line, white_name, black_name, white_participant, black_participant in _game_schedule(
+            opening_lines=opening_lines,
+            competitor_a=config.competitor_a,
+            competitor_b=config.competitor_b,
+            participant_a=participant_a,
+            participant_b=participant_b,
+            game_count=config.game_count,
+        ):
+            board = board_from_move_sequence(line.move_sequence or "")
+            game_number = len(game_ids) + 1
+
+            async def mark_game_started(game_id: int, number: int = game_number) -> None:
+                if on_game_started is None:
+                    return
+                callback_result = on_game_started(game_id, number)
+                if isawaitable(callback_result):
+                    await callback_result
+
+            result = await ArenaGame(
+                white=source_factory(white_name),
+                black=source_factory(black_name),
+                settings=settings,
+                legality_mode=config.legality_mode,
+                max_plies=config.max_plies,
+                evaluator=evaluator,
+                initial_board=board,
+                run_id=run.id,
+                white_participant_id=white_participant.id,
+                black_participant_id=black_participant.id,
+                opening_line_id=line.id,
+                strategic_memory=config.strategic_memory,
+            ).run(
+                session,
+                commit_after_each_ply=commit_after_each_ply,
+                on_game_started=mark_game_started if on_game_started is not None else None,
+            )
+            game_ids.append(result.game_id)
+            if on_game_completed is not None:
+                callback_result = on_game_completed(result.game_id, len(game_ids))
+                if isawaitable(callback_result):
+                    await callback_result
     finally:
         _close_if_present(evaluator)
     return TournamentResult(run_id=run.id, config_hash=config_hash, game_ids=game_ids)
@@ -265,6 +294,48 @@ def board_from_move_sequence(move_sequence: str) -> chess.Board:
     return board
 
 
+def _game_schedule(
+    *,
+    opening_lines: list[models.OpeningLine],
+    competitor_a: str,
+    competitor_b: str,
+    participant_a: models.RunParticipant,
+    participant_b: models.RunParticipant,
+    game_count: int | None,
+) -> list[
+    tuple[
+        models.OpeningLine,
+        str,
+        str,
+        models.RunParticipant,
+        models.RunParticipant,
+    ]
+]:
+    pairings: list[
+        tuple[
+            models.OpeningLine,
+            str,
+            str,
+            models.RunParticipant,
+            models.RunParticipant,
+        ]
+    ] = []
+    for line in opening_lines:
+        pairings.extend(
+            [
+                (line, competitor_a, competitor_b, participant_a, participant_b),
+                (line, competitor_b, competitor_a, participant_b, participant_a),
+            ]
+        )
+    if game_count is None:
+        return pairings
+    if game_count <= 0:
+        return []
+    if not pairings:
+        return []
+    return [pairings[index % len(pairings)] for index in range(game_count)]
+
+
 async def _create_participant(
     session: AsyncSession,
     *,
@@ -337,11 +408,13 @@ def _config_payload(
         },
         "legality_mode": config.legality_mode,
         "max_plies": config.max_plies,
+        "game_count": config.game_count,
         "seed": config.seed,
         "opening_suite_id": opening_suite_id,
         "prompt_id": prompt_id,
         "prompt_version": settings.prompt_version,
         "stockfish_options": _stockfish_options(settings),
+        "strategic_memory": config.strategic_memory,
     }
 
 

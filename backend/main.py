@@ -4,6 +4,7 @@ import shutil
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -13,9 +14,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from arena_core.cli import _play_async
+from arena_core.cli import _play_async, _source_from_name
 from arena_core.config import Settings, get_settings
+from arena_core.evaluators.stockfish import StockfishEvaluator
+from arena_core.leaderboards import rebuild_game_summaries
 from arena_core.persistence.database import create_session_factory
+from arena_core.persistence.database import init_db as create_tables
 from arena_core.persistence.models import (
     AppSetting,
     Attempt,
@@ -30,10 +34,13 @@ from arena_core.persistence.models import (
     TokenUsage,
 )
 from arena_core.reports import export_game_report
+from arena_core.tournaments import TournamentConfig, run_tournament
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
+JobKind = Literal["game", "stockfish_match"]
+StockfishLevel = Literal["beginner", "club"]
 
 GAME_DEFAULTS_KEY = "game_defaults"
 
@@ -50,6 +57,7 @@ class GameDefaults(BaseModel):
 class GameJob(BaseModel):
     id: str
     status: GameJobStatus
+    kind: JobKind = "game"
     white: str
     black: str
     legality_mode: str
@@ -61,6 +69,11 @@ class GameJob(BaseModel):
     ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode
     max_plies: int | None
+    stockfish_level: StockfishLevel | None = None
+    games_requested: int | None = None
+    games_completed: int = 0
+    run_id: int | None = None
+    game_ids: list[int] = Field(default_factory=list)
     game_id: int | None = None
     result: str | None = None
     termination_reason: str | None = None
@@ -78,6 +91,22 @@ class ModelOption(BaseModel):
 class StartGameRequest(BaseModel):
     white: str
     black: str
+    legality_mode: Literal["open", "constrained"] = "constrained"
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    num_ctx: int | None = Field(default=None, gt=0)
+    num_predict: int | None = Field(default=None, gt=0)
+    ollama_thinking: bool = False
+    ollama_cpu_offload: bool = False
+    guidance_mode: GuidanceMode = "legal_list"
+    max_plies: int | None = None
+    stockfish_path: str | None = None
+
+
+class StartStockfishMatchRequest(BaseModel):
+    model: str
+    stockfish_level: StockfishLevel = "beginner"
+    game_count: int = Field(default=4, ge=1, le=200)
     legality_mode: Literal["open", "constrained"] = "constrained"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
@@ -284,7 +313,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @api.get("/models")
     async def list_models() -> list[ModelOption]:
         options = [ModelOption(id="random", label="random", provider="built-in")]
-        if effective_settings.stockfish_path:
+        if _effective_stockfish_path(effective_settings, None):
             options.append(ModelOption(id="stockfish", label="stockfish", provider="engine"))
         options.extend(_gemini_model_options(effective_settings))
         options.extend(await _ollama_model_options(effective_settings))
@@ -373,6 +402,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 guidance_mode=payload.guidance_mode,
                 max_plies=payload.max_plies,
                 stockfish_path=payload.stockfish_path,
+            )
+        )
+        return StartGameResponse(job_id=job_id, status="running")
+
+    @api.post("/matches/stockfish/start")
+    async def start_stockfish_match(payload: StartStockfishMatchRequest) -> StartGameResponse:
+        model = payload.model.strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model source is required")
+        if payload.max_plies is not None and payload.max_plies <= 0:
+            raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+        stockfish_path = _effective_stockfish_path(effective_settings, payload.stockfish_path)
+        if stockfish_path is None:
+            raise HTTPException(
+                status_code=400,
+                detail="stockfish binary not configured; set ARENA_STOCKFISH_PATH",
+            )
+
+        job_id = uuid.uuid4().hex
+        stockfish_label = _stockfish_display_name(payload.stockfish_level)
+        job = GameJob(
+            id=job_id,
+            status="running",
+            kind="stockfish_match",
+            white=model,
+            black=stockfish_label,
+            legality_mode=payload.legality_mode,
+            temperature=payload.temperature,
+            top_p=payload.top_p,
+            num_ctx=payload.num_ctx,
+            num_predict=payload.num_predict,
+            ollama_thinking=payload.ollama_thinking,
+            ollama_cpu_offload=payload.ollama_cpu_offload,
+            guidance_mode=payload.guidance_mode,
+            max_plies=payload.max_plies,
+            stockfish_level=payload.stockfish_level,
+            games_requested=payload.game_count,
+            created_at=_utcnow_iso(),
+        )
+        game_jobs[job_id] = job
+        game_tasks[job_id] = asyncio.create_task(
+            _run_stockfish_match_job(
+                job_id=job_id,
+                jobs=game_jobs,
+                tasks=game_tasks,
+                session_factory=session_factory,
+                settings=effective_settings,
+                model=model,
+                level=payload.stockfish_level,
+                game_count=payload.game_count,
+                legality_mode=payload.legality_mode,
+                sampling=GameDefaults(
+                    temperature=payload.temperature,
+                    top_p=payload.top_p,
+                    num_ctx=payload.num_ctx,
+                    num_predict=payload.num_predict,
+                ),
+                ollama_thinking=payload.ollama_thinking,
+                ollama_cpu_offload=payload.ollama_cpu_offload,
+                guidance_mode=payload.guidance_mode,
+                max_plies=payload.max_plies,
+                stockfish_path=stockfish_path,
             )
         )
         return StartGameResponse(job_id=job_id, status="running")
@@ -842,8 +933,149 @@ async def _run_game_job(
             update={
                 "status": "completed",
                 "game_id": result.game_id,
+                "game_ids": [result.game_id],
+                "games_completed": 1,
                 "result": result.result,
                 "termination_reason": result.termination_reason,
+                "completed_at": _utcnow_iso(),
+            }
+        )
+
+
+async def _run_stockfish_match_job(
+    *,
+    job_id: str,
+    jobs: dict[str, GameJob],
+    tasks: dict[str, asyncio.Task[None]],
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    model: str,
+    level: StockfishLevel,
+    game_count: int,
+    legality_mode: Literal["open", "constrained"],
+    sampling: GameDefaults,
+    ollama_thinking: bool,
+    ollama_cpu_offload: bool,
+    guidance_mode: GuidanceMode,
+    max_plies: int | None,
+    stockfish_path: str,
+) -> None:
+    try:
+        await create_tables(settings.database_url)
+        stockfish_settings = _settings_for_stockfish_level(
+            _settings_for_ollama_options(
+                settings,
+                sampling=sampling,
+                thinking=ollama_thinking,
+                cpu_offload=ollama_cpu_offload,
+            ),
+            level=level,
+            stockfish_path=stockfish_path,
+        )
+        evaluator = StockfishEvaluator(
+            binary_path=stockfish_path,
+            nodes=stockfish_settings.stockfish_nodes,
+            threads=stockfish_settings.stockfish_threads,
+            hash_mb=stockfish_settings.stockfish_hash_mb,
+        )
+
+        def mark_game_started(game_id: int, number: int) -> None:
+            job = jobs.get(job_id)
+            if job is None or job.status != "running":
+                return
+            jobs[job_id] = job.model_copy(
+                update={
+                    "game_id": game_id,
+                    "games_completed": max(number - 1, 0),
+                }
+            )
+
+        def mark_game_completed(game_id: int, completed: int) -> None:
+            job = jobs.get(job_id)
+            if job is None or job.status != "running":
+                return
+            game_ids = [*job.game_ids, game_id]
+            jobs[job_id] = job.model_copy(
+                update={
+                    "game_id": game_ids[0],
+                    "game_ids": game_ids,
+                    "games_completed": completed,
+                }
+            )
+
+        async with session_factory() as session:
+            result = await run_tournament(
+                session=session,
+                config=TournamentConfig(
+                    name=f"{model} vs {_stockfish_display_name(level)}",
+                    competitor_a=model,
+                    competitor_b="stockfish",
+                    legality_mode=legality_mode,
+                    max_plies=max_plies,
+                    game_count=game_count,
+                    strategic_memory=guidance_mode == "strategic_memory",
+                ),
+                settings=stockfish_settings,
+                source_factory=lambda source_name: _source_from_name(
+                    source_name,
+                    stockfish_settings,
+                ),
+                evaluator=evaluator,
+                commit_after_each_ply=True,
+                on_game_started=mark_game_started,
+                on_game_completed=mark_game_completed,
+            )
+            jobs[job_id] = jobs[job_id].model_copy(update={"run_id": result.run_id})
+            async with session.begin():
+                summary_count = await rebuild_game_summaries(session, run_id=result.run_id)
+                session.add(
+                    OperationalEvent(
+                        run_id=result.run_id,
+                        event_kind="stockfish_match_summary",
+                        severity="info",
+                        message="Stockfish match summary materialized.",
+                        payload={
+                            "model": model,
+                            "stockfish_level": level,
+                            "games_requested": game_count,
+                            "games_completed": len(result.game_ids),
+                            "summary_rows": summary_count,
+                        },
+                    )
+                )
+    except asyncio.CancelledError:
+        job = jobs.get(job_id)
+        if job is not None:
+            jobs[job_id] = job.model_copy(
+                update={
+                    "status": "cancelled",
+                    "termination_reason": "aborted_by_user",
+                    "completed_at": job.completed_at or _utcnow_iso(),
+                }
+            )
+        raise
+    except Exception as exc:
+        jobs[job_id] = jobs[job_id].model_copy(
+            update={
+                "status": "failed",
+                "error": str(exc) or type(exc).__name__,
+                "completed_at": _utcnow_iso(),
+            }
+        )
+        return
+    finally:
+        tasks.pop(job_id, None)
+
+    if jobs[job_id].status == "running":
+        jobs[job_id] = jobs[job_id].model_copy(
+            update={
+                "status": "completed",
+                "run_id": result.run_id,
+                "game_id": result.game_ids[0] if result.game_ids else None,
+                "game_ids": result.game_ids,
+                "games_completed": len(result.game_ids),
+                "result": "summary",
+                "termination_reason": "completed",
                 "completed_at": _utcnow_iso(),
             }
         )
@@ -860,6 +1092,47 @@ async def _mark_game_cancelled(
             game.result = "*"
             game.termination_reason = "aborted_by_user"
             game.ended_at = datetime.now(UTC)
+
+
+def _effective_stockfish_path(settings: Settings, override: str | None) -> str | None:
+    candidate = override or settings.stockfish_path
+    if candidate:
+        return candidate
+    path_candidate = shutil.which("stockfish")
+    if path_candidate:
+        return path_candidate
+    vendor_candidate = Path("vendor/stockfish/root/usr/games/stockfish")
+    if vendor_candidate.exists():
+        return str(vendor_candidate.resolve())
+    return None
+
+
+def _settings_for_stockfish_level(
+    settings: Settings,
+    *,
+    level: StockfishLevel,
+    stockfish_path: str,
+) -> Settings:
+    preset = _stockfish_level_options(level)
+    return settings.model_copy(
+        update={
+            "stockfish_path": stockfish_path,
+            "stockfish_skill": preset["skill"],
+            "stockfish_limit_strength": True,
+            "stockfish_target_elo": preset["target_elo"],
+        }
+    )
+
+
+def _stockfish_level_options(level: StockfishLevel) -> dict[str, int]:
+    if level == "club":
+        return {"skill": 8, "target_elo": 1600}
+    return {"skill": 2, "target_elo": 1320}
+
+
+def _stockfish_display_name(level: StockfishLevel) -> str:
+    preset = _stockfish_level_options(level)
+    return f"Stockfish {preset['target_elo']} ({level})"
 
 
 def _settings_for_ollama_options(

@@ -70,6 +70,76 @@ async def test_tournament_persists_run_openings_and_both_colors(tmp_path: Path) 
     assert all(game.termination_reason == "max_plies" for game in games)
 
 
+@pytest.mark.integration
+async def test_tournament_can_limit_exact_game_count(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+
+    async with session_factory() as session:
+        async with session.begin():
+            result = await run_tournament(
+                session=session,
+                config=TournamentConfig(
+                    name="limited-count",
+                    competitor_a="random",
+                    competitor_b="random",
+                    max_plies=1,
+                    game_count=3,
+                ),
+                settings=Settings(max_retries=0),
+                source_factory=lambda _name: RandomMoveSource(),
+            )
+
+    async with session_factory() as session:
+        games = (
+            await session.execute(
+                select(Game).where(Game.run_id == result.run_id).order_by(Game.id)
+            )
+        ).scalars().all()
+
+    assert len(result.game_ids) == 3
+    assert len(games) == 3
+    assert len({game.opening_line_id for game in games}) == 2
+
+
+@pytest.mark.integration
+async def test_tournament_live_commit_exposes_started_game(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+    visible_started_games: list[int] = []
+
+    async def record_visible_game(game_id: int, _game_number: int) -> None:
+        async with session_factory() as observer:
+            visible = await observer.get(Game, game_id)
+        if visible is not None:
+            visible_started_games.append(game_id)
+
+    async with session_factory() as session:
+        result = await run_tournament(
+            session=session,
+            config=TournamentConfig(
+                name="live-commit",
+                competitor_a="random",
+                competitor_b="random",
+                max_plies=1,
+                game_count=1,
+            ),
+            settings=Settings(max_retries=0),
+            source_factory=lambda _name: RandomMoveSource(),
+            commit_after_each_ply=True,
+            on_game_started=record_visible_game,
+        )
+
+    async with session_factory() as session:
+        game = await session.get(Game, result.game_ids[0])
+
+    assert visible_started_games == result.game_ids
+    assert game is not None
+    assert game.ended_at is not None
+
+
 def test_board_from_move_sequence_applies_opening() -> None:
     board = board_from_move_sequence("e2e4 e7e5")
 

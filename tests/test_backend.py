@@ -14,6 +14,7 @@ from backend.main import (
     _game_stream_payload,
     _gemini_model_options,
     _settings_for_ollama_options,
+    _settings_for_stockfish_level,
     create_app,
 )
 
@@ -182,3 +183,16 @@ def test_game_defaults_sampling_flows_into_settings() -> None:
     assert settings.ollama_num_ctx == 16384
     assert settings.ollama_num_predict == 200
     assert settings.ollama_num_gpu is None
+
+
+def test_stockfish_level_preset_sets_limited_strength() -> None:
+    settings = _settings_for_stockfish_level(
+        Settings(),
+        level="club",
+        stockfish_path="/usr/bin/stockfish",
+    )
+
+    assert settings.stockfish_path == "/usr/bin/stockfish"
+    assert settings.stockfish_skill == 8
+    assert settings.stockfish_limit_strength is True
+    assert settings.stockfish_target_elo == 1600

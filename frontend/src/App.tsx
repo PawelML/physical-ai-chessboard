@@ -33,6 +33,7 @@ import {
   fetchGameDefaults,
   saveGameDefaults,
   startGame,
+  startStockfishMatch,
   type GameDefaults,
   type GameDetail,
   type GameJob,
@@ -43,6 +44,8 @@ import {
   type RuntimeTelemetry,
   type RunComparisonRow,
   type StartGamePayload,
+  type StartStockfishMatchPayload,
+  type StockfishLevel,
 } from "./api";
 import { moveSquares, parseFenBoard, startFen } from "./chess";
 
@@ -102,11 +105,16 @@ export default function App() {
       const jobs = await fetchGameJobs();
       void refetchJobs();
       const job = jobs.find((row) => row.id === jobId);
+      if (job?.run_id) {
+        setLeaderboardRunId(job.run_id);
+      }
       if (job?.game_id) {
         setSelectedGameId(job.game_id);
         setPlyIndex(0);
         void refetchGames();
         void refetchGame();
+        void refetchLeaderboard();
+        void refetchComparison();
         return;
       }
       if (!job || job.status === "failed" || attempt >= 90) {
@@ -123,6 +131,17 @@ export default function App() {
     mutationFn: startGame,
     onSuccess: (response) => {
       setActiveLiveJobId(response.job_id);
+      void refetchJobs();
+      void refetchGames();
+      selectGameWhenJobStarts(response.job_id);
+    },
+  });
+
+  const startStockfishMatchMutation = useMutation({
+    mutationFn: startStockfishMatch,
+    onSuccess: (response) => {
+      setActiveLiveJobId(response.job_id);
+      setWorkspaceTab("benchmark");
       void refetchJobs();
       void refetchGames();
       selectGameWhenJobStarts(response.job_id);
@@ -253,9 +272,10 @@ export default function App() {
             modelOptions={modelOptionsQuery.data ?? []}
             jobs={gameJobsQuery.data ?? []}
             loadingModels={modelOptionsQuery.isLoading}
-            submitting={startGameMutation.isPending}
-            error={startGameMutation.error}
+            submitting={startGameMutation.isPending || startStockfishMatchMutation.isPending}
+            error={startGameMutation.error ?? startStockfishMatchMutation.error}
             onSubmit={(payload) => startGameMutation.mutate(payload)}
+            onSubmitStockfishMatch={(payload) => startStockfishMatchMutation.mutate(payload)}
             cancellingJobId={cancelGameMutation.isPending ? cancelGameMutation.variables : null}
             onCancel={(jobId) => cancelGameMutation.mutate(jobId)}
           />
@@ -796,6 +816,7 @@ function StartGamePanel({
   submitting,
   error,
   onSubmit,
+  onSubmitStockfishMatch,
   cancellingJobId,
   onCancel,
 }: {
@@ -805,14 +826,23 @@ function StartGamePanel({
   submitting: boolean;
   error: Error | null;
   onSubmit: (payload: StartGamePayload) => void;
+  onSubmitStockfishMatch: (payload: StartStockfishMatchPayload) => void;
   cancellingJobId: string | null | undefined;
   onCancel: (jobId: string) => void;
 }) {
   const ollamaOptions = modelOptions.filter((option) => option.provider === "ollama");
+  const matchModelOptions = modelOptions.filter(
+    (option) => option.provider !== "engine" && option.id !== "random",
+  );
   const defaultWhite = ollamaOptions[0]?.id ?? modelOptions[0]?.id ?? "random";
   const defaultBlack = ollamaOptions[1]?.id ?? ollamaOptions[0]?.id ?? modelOptions[1]?.id ?? defaultWhite;
+  const defaultMatchModel = matchModelOptions[0]?.id ?? defaultWhite;
+  const [startMode, setStartMode] = useState<"game" | "stockfish">("game");
   const [white, setWhite] = useState<string | null>(null);
   const [black, setBlack] = useState<string | null>(null);
+  const [matchModel, setMatchModel] = useState<string | null>(null);
+  const [stockfishLevel, setStockfishLevel] = useState<StockfishLevel>("beginner");
+  const [matchGameCount, setMatchGameCount] = useState("4");
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
   // null = untouched -> fall back to the server-saved default for display.
   const [temperature, setTemperature] = useState<string | null>(null);
@@ -826,6 +856,7 @@ function StartGamePanel({
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
+  const selectedMatchModel = matchModel ?? defaultMatchModel;
 
   const defaultsQuery = useQuery({ queryKey: ["game-defaults"], queryFn: fetchGameDefaults });
   const savedDefaults = defaultsQuery.data;
@@ -873,39 +904,111 @@ function StartGamePanel({
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          onSubmit({
-            white: selectedWhite,
-            black: selectedBlack,
+          const sharedPayload = {
             legality_mode: legalityMode,
             ...samplingPayload(),
             ollama_thinking: ollamaThinking,
             ollama_cpu_offload: ollamaCpuOffload,
             guidance_mode: guidanceMode,
             max_plies: maxPlies ? Number(maxPlies) : null,
+          };
+          if (startMode === "stockfish") {
+            onSubmitStockfishMatch({
+              model: selectedMatchModel,
+              stockfish_level: stockfishLevel,
+              game_count: Math.max(1, Number(matchGameCount) || 1),
+              ...sharedPayload,
+            });
+            return;
+          }
+          onSubmit({
+            white: selectedWhite,
+            black: selectedBlack,
+            ...sharedPayload,
           });
         }}
       >
-        <fieldset className="start-game-group">
-          <legend>Player Models</legend>
-          <label>
-            <span>White model</span>
-            <ModelInput
-              value={selectedWhite}
-              options={modelOptions}
-              disabled={submitting}
-              onChange={setWhite}
-            />
-          </label>
-          <label>
-            <span>Black model</span>
-            <ModelInput
-              value={selectedBlack}
-              options={modelOptions}
-              disabled={submitting}
-              onChange={setBlack}
-            />
-          </label>
-        </fieldset>
+        <div className="mode-toggle" role="tablist" aria-label="Start mode">
+          <button
+            className={startMode === "game" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={startMode === "game"}
+            disabled={submitting}
+            onClick={() => setStartMode("game")}
+          >
+            Single game
+          </button>
+          <button
+            className={startMode === "stockfish" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={startMode === "stockfish"}
+            disabled={submitting}
+            onClick={() => setStartMode("stockfish")}
+          >
+            Stockfish eval
+          </button>
+        </div>
+
+        {startMode === "game" ? (
+          <fieldset className="start-game-group">
+            <legend>Player Models</legend>
+            <label>
+              <span>White model</span>
+              <ModelInput
+                value={selectedWhite}
+                options={modelOptions}
+                disabled={submitting}
+                onChange={setWhite}
+              />
+            </label>
+            <label>
+              <span>Black model</span>
+              <ModelInput
+                value={selectedBlack}
+                options={modelOptions}
+                disabled={submitting}
+                onChange={setBlack}
+              />
+            </label>
+          </fieldset>
+        ) : (
+          <fieldset className="start-game-group">
+            <legend>Stockfish Evaluation</legend>
+            <label>
+              <span>Model under test</span>
+              <ModelInput
+                value={selectedMatchModel}
+                options={matchModelOptions.length ? matchModelOptions : modelOptions}
+                disabled={submitting}
+                onChange={setMatchModel}
+              />
+            </label>
+            <label>
+              <span>Stockfish level</span>
+              <select
+                value={stockfishLevel}
+                disabled={submitting}
+                onChange={(event) => setStockfishLevel(event.target.value as StockfishLevel)}
+              >
+                <option value="beginner">Beginner · 1320 Elo</option>
+                <option value="club">Club · 1600 Elo</option>
+              </select>
+            </label>
+            <label>
+              <span>Games in match</span>
+              <input
+                type="number"
+                min="1"
+                max="200"
+                value={matchGameCount}
+                disabled={submitting}
+                onChange={(event) => setMatchGameCount(event.target.value)}
+              />
+            </label>
+          </fieldset>
+        )}
 
         <fieldset className="start-game-group shared">
           <legend>Shared Game Settings</legend>
@@ -1046,8 +1149,15 @@ function StartGamePanel({
             />
           </label>
         </fieldset>
-        <button className="primary-button" type="submit" disabled={submitting || !selectedWhite || !selectedBlack}>
-          {submitting ? "Starting" : "Start game"}
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={
+            submitting ||
+            (startMode === "game" ? !selectedWhite || !selectedBlack : !selectedMatchModel)
+          }
+        >
+          {submitting ? "Starting" : startMode === "stockfish" ? "Start evaluation" : "Start game"}
         </button>
       </form>
       {loadingModels && <p className="muted compact">Loading local Ollama models.</p>}
@@ -1060,7 +1170,10 @@ function StartGamePanel({
                 <span>
                   {job.white} vs {job.black}
                 </span>
-                <strong>{job.guidance_mode} · {ollamaJobOptions(job)} · {jobLabel(job)}</strong>
+                <strong>
+                  {job.kind === "stockfish_match" ? stockfishJobOptions(job) : job.guidance_mode} ·{" "}
+                  {ollamaJobOptions(job)} · {jobLabel(job)}
+                </strong>
               </div>
               {job.status === "running" && (
                 <button
@@ -1105,12 +1218,24 @@ function ModelInput({
 
 function jobLabel(job: GameJob) {
   if (job.status === "running") {
+    if (job.kind === "stockfish_match" && job.games_requested) {
+      return `${job.games_completed}/${job.games_requested} games`;
+    }
     return "running";
   }
   if (job.status === "failed") {
     return job.error ?? "failed";
   }
+  if (job.kind === "stockfish_match") {
+    return job.run_id ? `Run ${job.run_id}` : "completed";
+  }
   return job.game_id ? `Game ${job.game_id}` : "completed";
+}
+
+function stockfishJobOptions(job: GameJob) {
+  const level = job.stockfish_level ?? "stockfish";
+  const games = job.games_requested ? `${job.games_requested} games` : "match";
+  return `${level} · ${games}`;
 }
 
 function ollamaJobOptions(job: GameJob) {
@@ -1772,6 +1897,7 @@ function Leaderboard({
             <span>Mode</span>
             <span>Color</span>
             <span>W-D-L-U</span>
+            <span>Score</span>
             <span>Avg CPL</span>
             <span>Illegal</span>
             <span>Retries</span>
@@ -1788,6 +1914,7 @@ function Leaderboard({
               <span>
                 {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
+              <span>{scorePercent(row)}</span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
               <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
               <span>{row.avg_retries.toFixed(2)}</span>
@@ -1798,4 +1925,11 @@ function Leaderboard({
       )}
     </section>
   );
+}
+
+function scorePercent(row: { games_played: number; wins: number; draws: number }) {
+  if (row.games_played === 0) {
+    return "—";
+  }
+  return `${(((row.wins + row.draws * 0.5) / row.games_played) * 100).toFixed(1)}%`;
 }
