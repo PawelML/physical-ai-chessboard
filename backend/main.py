@@ -659,7 +659,8 @@ async def _ollama_runtime_models(settings: Settings) -> list[OllamaRuntimeModel]
     for item in payload.get("models", []):
         if not isinstance(item, dict):
             continue
-        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        raw_details = item.get("details")
+        details: dict[str, object] = raw_details if isinstance(raw_details, dict) else {}
         context_window = item.get("context_length") or item.get("context")
         processor = item.get("processor")
         expires_at = item.get("expires_at")
@@ -748,35 +749,38 @@ def _settings_for_ollama_options(
     cpu_offload: bool,
 ) -> Settings:
     if preset == "low_creativity":
-        update = {
-            "ollama_temperature": 0.2,
-            "ollama_top_p": 0.9,
-            "ollama_num_ctx": 32768,
-            "ollama_num_predict": 128,
-        }
+        temperature = 0.2
+        top_p: float | None = 0.9
+        num_ctx: int | None = 32768
+        num_predict: int | None = 128
     else:
-        update = {
-            "ollama_temperature": 0.0,
-            "ollama_top_p": None,
-            "ollama_num_ctx": None,
-            "ollama_num_predict": None,
-        }
+        temperature = 0.0
+        top_p = None
+        num_ctx = None
+        num_predict = None
 
+    think = "off"
     if thinking:
-        update["ollama_think"] = "auto"
-        update["ollama_num_predict"] = max(int(update["ollama_num_predict"] or 0), 512)
-        update["ollama_num_ctx"] = update["ollama_num_ctx"] or 32768
-    else:
-        update["ollama_think"] = "off"
+        think = "auto"
+        num_predict = max(num_predict or 0, 512)
+        num_ctx = num_ctx or 32768
 
+    num_gpu: int | None = None
     if cpu_offload:
-        update["ollama_num_gpu"] = settings.ollama_cpu_offload_gpu_layers
-        update["ollama_num_ctx"] = min(int(update["ollama_num_ctx"] or 8192), 8192)
-        update["ollama_num_predict"] = update["ollama_num_predict"] or 256
-    else:
-        update["ollama_num_gpu"] = None
+        num_gpu = settings.ollama_cpu_offload_gpu_layers
+        num_ctx = min(num_ctx or 8192, 8192)
+        num_predict = num_predict or 256
 
-    return settings.model_copy(update=update)
+    return settings.model_copy(
+        update={
+            "ollama_temperature": temperature,
+            "ollama_top_p": top_p,
+            "ollama_num_ctx": num_ctx,
+            "ollama_num_predict": num_predict,
+            "ollama_think": think,
+            "ollama_num_gpu": num_gpu,
+        }
+    )
 
 
 def _size_cpu_bytes(size_bytes: int | None, size_vram_bytes: int | None) -> int | None:
