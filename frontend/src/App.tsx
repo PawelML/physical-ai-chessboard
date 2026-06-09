@@ -757,7 +757,7 @@ function StartGamePanel({
   const defaultBlack = ollamaOptions[1]?.id ?? ollamaOptions[0]?.id ?? modelOptions[1]?.id ?? defaultWhite;
   const [white, setWhite] = useState<string | null>(null);
   const [black, setBlack] = useState<string | null>(null);
-  const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("open");
+  const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
@@ -807,8 +807,8 @@ function StartGamePanel({
             disabled={submitting}
             onChange={(event) => setLegalityMode(event.target.value as "open" | "constrained")}
           >
+            <option value="constrained">Legal move list</option>
             <option value="open">Open</option>
-            <option value="constrained">Constrained</option>
           </select>
         </label>
         <label>

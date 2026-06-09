@@ -58,7 +58,7 @@ class ModelOption(BaseModel):
 class StartGameRequest(BaseModel):
     white: str
     black: str
-    legality_mode: Literal["open", "constrained"] = "open"
+    legality_mode: Literal["open", "constrained"] = "constrained"
     max_plies: int | None = None
     stockfish_path: str | None = None
 

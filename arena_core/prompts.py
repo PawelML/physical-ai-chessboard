@@ -7,7 +7,7 @@ import chess
 PromptMode = Literal["strict", "reasoning"]
 LegalityMode = Literal["open", "constrained"]
 
-STRICT_TEMPLATE_VERSION = "strict-v1"
+STRICT_TEMPLATE_VERSION = "strict-v2"
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ def build_strict_prompt(
     parts = [
         "You are playing a benchmark chess game.",
         "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}.",
+        "The move value must be UCI notation, not SAN. Use e2e4, not e4.",
         f"Side to move: {side}.",
         f"Current FEN: {board.fen()}",
         f"SAN history: {' '.join(san_history) if san_history else '(start position)'}",
@@ -53,7 +54,12 @@ def build_strict_prompt(
         parts.append(f"ASCII board:\n{board}")
     if legality_mode == "constrained" or feedback is not None:
         legal_moves = sorted(move.uci() for move in board.legal_moves)
-        parts.append("Legal moves: " + ", ".join(legal_moves))
+        parts.extend(
+            [
+                "Choose exactly one move from this legal UCI move list.",
+                "Legal UCI moves: " + ", ".join(legal_moves),
+            ]
+        )
     if feedback is not None:
         parts.append(f"Previous attempt feedback: {feedback}")
     text = "\n".join(parts)
