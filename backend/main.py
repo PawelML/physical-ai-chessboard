@@ -3,10 +3,12 @@ import json
 import shutil
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import chess
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -16,8 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from arena_core.cli import _play_async, _source_from_name
 from arena_core.config import Settings, get_settings
+from arena_core.engine import ArenaGame, MoveSource
 from arena_core.evaluators.stockfish import StockfishEvaluator
 from arena_core.leaderboards import rebuild_game_summaries
+from arena_core.move_sources import MoveProposal
 from arena_core.persistence.database import create_session_factory
 from arena_core.persistence.database import init_db as create_tables
 from arena_core.persistence.models import (
@@ -41,6 +45,7 @@ GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
 JobKind = Literal["game", "stockfish_match"]
 StockfishLevel = Literal["beginner", "club"]
+HumanColor = Literal["white", "black"]
 
 GAME_DEFAULTS_KEY = "game_defaults"
 
@@ -119,6 +124,26 @@ class StartStockfishMatchRequest(BaseModel):
     stockfish_path: str | None = None
 
 
+class StartHumanGameRequest(BaseModel):
+    human_color: HumanColor = "white"
+    opponent: str
+    stockfish_level: StockfishLevel | None = None
+    legality_mode: Literal["open", "constrained"] = "constrained"
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    num_ctx: int | None = Field(default=None, gt=0)
+    num_predict: int | None = Field(default=None, gt=0)
+    ollama_thinking: bool = False
+    ollama_cpu_offload: bool = False
+    guidance_mode: GuidanceMode = "legal_list"
+    max_plies: int | None = None
+    stockfish_path: str | None = None
+
+
+class HumanMoveRequest(BaseModel):
+    move: str
+
+
 class StartGameResponse(BaseModel):
     job_id: str
     status: GameJobStatus
@@ -128,6 +153,30 @@ class CancelGameResponse(BaseModel):
     job_id: str
     status: GameJobStatus
     game_id: int | None = None
+
+
+class HumanGameState(BaseModel):
+    id: str
+    status: GameJobStatus
+    game_id: int
+    human_color: HumanColor
+    opponent: str
+    turn: HumanColor | None
+    result: str | None = None
+    termination_reason: str | None = None
+    legal_moves: list[str]
+    error: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
+@dataclass
+class HumanGameRuntime:
+    arena: ArenaGame
+    game_id: int
+    human_color: chess.Color
+    opponent_source: MoveSource
+    lock: asyncio.Lock
 
 
 class GpuTelemetry(BaseModel):
@@ -307,6 +356,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api = FastAPI(title="Physical AI Chessboard Arena")
     game_jobs: dict[str, GameJob] = {}
     game_tasks: dict[str, asyncio.Task[None]] = {}
+    human_games: dict[str, HumanGameState] = {}
+    human_runtimes: dict[str, HumanGameRuntime] = {}
 
     @api.get("/health")
     async def health() -> dict[str, str]:
@@ -336,6 +387,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @api.get("/games/jobs")
     async def list_game_jobs() -> list[GameJob]:
         return sorted(game_jobs.values(), key=lambda job: job.created_at, reverse=True)
+
+    @api.get("/human-games")
+    async def list_human_games() -> list[HumanGameState]:
+        return sorted(human_games.values(), key=lambda game: game.created_at, reverse=True)
 
     @api.get("/settings/game-defaults")
     async def get_game_defaults() -> GameDefaults:
@@ -469,6 +524,187 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         return StartGameResponse(job_id=job_id, status="running")
+
+    @api.post("/human-games/start")
+    async def start_human_game(payload: StartHumanGameRequest) -> HumanGameState:
+        opponent = payload.opponent.strip()
+        if not opponent:
+            raise HTTPException(status_code=400, detail="opponent source is required")
+        if payload.max_plies is not None and payload.max_plies <= 0:
+            raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+        await create_tables(effective_settings.database_url)
+
+        base_settings = _settings_for_ollama_options(
+            effective_settings,
+            sampling=GameDefaults(
+                temperature=payload.temperature,
+                top_p=payload.top_p,
+                num_ctx=payload.num_ctx,
+                num_predict=payload.num_predict,
+            ),
+            thinking=payload.ollama_thinking,
+            cpu_offload=payload.ollama_cpu_offload,
+        )
+        stockfish_path = _effective_stockfish_path(effective_settings, payload.stockfish_path)
+        game_settings = base_settings
+        display_opponent = opponent
+        if opponent == "stockfish":
+            if stockfish_path is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="stockfish binary not configured; set ARENA_STOCKFISH_PATH",
+                )
+            game_settings = _settings_for_stockfish_level(
+                base_settings,
+                level=payload.stockfish_level or "beginner",
+                stockfish_path=stockfish_path,
+            )
+            display_opponent = _stockfish_display_name(payload.stockfish_level or "beginner")
+        elif stockfish_path is not None:
+            game_settings = base_settings.model_copy(update={"stockfish_path": stockfish_path})
+
+        opponent_source = _source_from_name(opponent, game_settings)
+        white: MoveSource
+        black: MoveSource
+        if payload.human_color == "white":
+            white = _HumanApiMoveSource("human")
+            black = opponent_source
+        else:
+            white = opponent_source
+            black = _HumanApiMoveSource("human")
+        evaluator = (
+            StockfishEvaluator(
+                binary_path=stockfish_path,
+                nodes=game_settings.stockfish_nodes,
+                threads=game_settings.stockfish_threads,
+                hash_mb=game_settings.stockfish_hash_mb,
+            )
+            if stockfish_path is not None
+            else None
+        )
+        arena = ArenaGame(
+            white=white,
+            black=black,
+            settings=game_settings,
+            legality_mode=payload.legality_mode,
+            max_plies=payload.max_plies,
+            evaluator=evaluator,
+            strategic_memory=payload.guidance_mode == "strategic_memory",
+        )
+        human_game_id = uuid.uuid4().hex
+        async with session_factory() as session:
+            game_row = await arena.start(session)
+            await session.commit()
+            state = _human_game_state(
+                human_game_id=human_game_id,
+                arena=arena,
+                game_id=game_row.id,
+                human_color=_color_from_name(payload.human_color),
+                opponent=display_opponent,
+                status="running",
+            )
+        human_games[human_game_id] = state
+        human_runtimes[human_game_id] = HumanGameRuntime(
+            arena=arena,
+            game_id=state.game_id,
+            human_color=_color_from_name(payload.human_color),
+            opponent_source=opponent_source,
+            lock=asyncio.Lock(),
+        )
+        if payload.human_color == "black":
+            state = await _play_opponent_until_human_turn(
+                human_game_id,
+                states=human_games,
+                runtimes=human_runtimes,
+                session_factory=session_factory,
+            )
+        return state
+
+    @api.get("/human-games/{human_game_id}")
+    async def get_human_game(human_game_id: str) -> HumanGameState:
+        state = human_games.get(human_game_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="human game not found")
+        return state
+
+    @api.post("/human-games/{human_game_id}/move")
+    async def play_human_move(human_game_id: str, payload: HumanMoveRequest) -> HumanGameState:
+        runtime = human_runtimes.get(human_game_id)
+        state = human_games.get(human_game_id)
+        if runtime is None or state is None:
+            raise HTTPException(status_code=404, detail="human game not found")
+        if state.status != "running":
+            return state
+        async with runtime.lock:
+            if runtime.arena.board.turn != runtime.human_color:
+                raise HTTPException(status_code=409, detail="not the human player's turn")
+            async with session_factory() as session:
+                game_row = await session.get(Game, runtime.game_id)
+                if game_row is None:
+                    raise HTTPException(status_code=404, detail="game not found")
+                ok, reason = await runtime.arena.play_human_move(
+                    session,
+                    runtime.game_id,
+                    payload.move,
+                )
+                if not ok:
+                    await session.commit()
+                    human_games[human_game_id] = _human_game_state(
+                        human_game_id=human_game_id,
+                        arena=runtime.arena,
+                        game_id=runtime.game_id,
+                        human_color=runtime.human_color,
+                        opponent=state.opponent,
+                        status="running",
+                        error=reason,
+                        created_at=state.created_at,
+                    )
+                    return human_games[human_game_id]
+                await _commit_or_finish_human_game(
+                    session=session,
+                    state_id=human_game_id,
+                    states=human_games,
+                    runtimes=human_runtimes,
+                    runtime=runtime,
+                    game_row=game_row,
+                    opponent=state.opponent,
+                )
+        return await _play_opponent_until_human_turn(
+            human_game_id,
+            states=human_games,
+            runtimes=human_runtimes,
+            session_factory=session_factory,
+        )
+
+    @api.post("/human-games/{human_game_id}/cancel")
+    async def cancel_human_game(human_game_id: str) -> HumanGameState:
+        runtime = human_runtimes.get(human_game_id)
+        state = human_games.get(human_game_id)
+        if runtime is None or state is None:
+            raise HTTPException(status_code=404, detail="human game not found")
+        async with runtime.lock:
+            async with session_factory() as session:
+                game_row = await session.get(Game, runtime.game_id)
+                if game_row is not None and game_row.ended_at is None:
+                    runtime.arena.finish(
+                        game_row,
+                        termination_reason="aborted_by_user",
+                        result="*",
+                    )
+                    await session.commit()
+            _close_if_present(runtime.opponent_source)
+            human_runtimes.pop(human_game_id, None)
+            human_games[human_game_id] = state.model_copy(
+                update={
+                    "status": "cancelled",
+                    "result": "*",
+                    "termination_reason": "aborted_by_user",
+                    "turn": None,
+                    "legal_moves": [],
+                    "completed_at": _utcnow_iso(),
+                }
+            )
+            return human_games[human_game_id]
 
     @api.post("/games/jobs/{job_id}/cancel")
     async def cancel_game_job(job_id: str) -> CancelGameResponse:
@@ -760,6 +996,162 @@ async def _game_stream_payload(
             for row in rows
         ]
     return {"games": games}
+
+
+class _HumanApiMoveSource:
+    source_type = "human"
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:  # pragma: no cover
+        raise RuntimeError("human moves are submitted through /human-games/{id}/move")
+
+
+def _color_from_name(color: HumanColor) -> chess.Color:
+    return chess.WHITE if color == "white" else chess.BLACK
+
+
+def _color_name(color: chess.Color) -> HumanColor:
+    return "white" if color == chess.WHITE else "black"
+
+
+def _human_game_state(
+    *,
+    human_game_id: str,
+    arena: ArenaGame,
+    game_id: int,
+    human_color: chess.Color,
+    opponent: str,
+    status: GameJobStatus,
+    result: str | None = None,
+    termination_reason: str | None = None,
+    error: str | None = None,
+    created_at: str | None = None,
+    completed_at: str | None = None,
+) -> HumanGameState:
+    turn = None if status != "running" else _color_name(arena.board.turn)
+    return HumanGameState(
+        id=human_game_id,
+        status=status,
+        game_id=game_id,
+        human_color=_color_name(human_color),
+        opponent=opponent,
+        turn=turn,
+        result=result,
+        termination_reason=termination_reason,
+        legal_moves=(
+            sorted(move.uci() for move in arena.board.legal_moves) if status == "running" else []
+        ),
+        error=error,
+        created_at=created_at or _utcnow_iso(),
+        completed_at=completed_at,
+    )
+
+
+async def _commit_or_finish_human_game(
+    *,
+    session: AsyncSession,
+    state_id: str,
+    states: dict[str, HumanGameState],
+    runtimes: dict[str, HumanGameRuntime],
+    runtime: HumanGameRuntime,
+    game_row: Game,
+    opponent: str,
+) -> HumanGameState:
+    game_row.final_fen = runtime.arena.board.fen()
+    game_row.pgn = runtime.arena._export_pgn("*")
+    is_finished, termination_reason = runtime.arena.pending_result()
+    if is_finished and termination_reason is not None:
+        runtime.arena.finish(game_row, termination_reason=termination_reason)
+        await session.commit()
+        _close_if_present(runtime.opponent_source)
+        runtimes.pop(state_id, None)
+        states[state_id] = _human_game_state(
+            human_game_id=state_id,
+            arena=runtime.arena,
+            game_id=runtime.game_id,
+            human_color=runtime.human_color,
+            opponent=opponent,
+            status="completed",
+            result=game_row.result,
+            termination_reason=termination_reason,
+            created_at=states[state_id].created_at,
+            completed_at=_utcnow_iso(),
+        )
+        return states[state_id]
+
+    await session.commit()
+    states[state_id] = _human_game_state(
+        human_game_id=state_id,
+        arena=runtime.arena,
+        game_id=runtime.game_id,
+        human_color=runtime.human_color,
+        opponent=opponent,
+        status="running",
+        created_at=states[state_id].created_at,
+    )
+    return states[state_id]
+
+
+async def _play_opponent_until_human_turn(
+    human_game_id: str,
+    *,
+    states: dict[str, HumanGameState],
+    runtimes: dict[str, HumanGameRuntime],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> HumanGameState:
+    runtime = runtimes.get(human_game_id)
+    state = states.get(human_game_id)
+    if runtime is None or state is None:
+        raise HTTPException(status_code=404, detail="human game not found")
+    async with runtime.lock:
+        while runtime.arena.board.turn != runtime.human_color:
+            async with session_factory() as session:
+                game_row = await session.get(Game, runtime.game_id)
+                if game_row is None:
+                    raise HTTPException(status_code=404, detail="game not found")
+                accepted = await runtime.arena.play_source_move(
+                    session,
+                    runtime.game_id,
+                    runtime.opponent_source,
+                )
+                if not accepted:
+                    runtime.arena.finish(game_row, termination_reason="forfeit_invalid")
+                    await session.commit()
+                    _close_if_present(runtime.opponent_source)
+                    runtimes.pop(human_game_id, None)
+                    states[human_game_id] = _human_game_state(
+                        human_game_id=human_game_id,
+                        arena=runtime.arena,
+                        game_id=runtime.game_id,
+                        human_color=runtime.human_color,
+                        opponent=state.opponent,
+                        status="completed",
+                        result=game_row.result,
+                        termination_reason="forfeit_invalid",
+                        created_at=state.created_at,
+                        completed_at=_utcnow_iso(),
+                    )
+                    return states[human_game_id]
+                new_state = await _commit_or_finish_human_game(
+                    session=session,
+                    state_id=human_game_id,
+                    states=states,
+                    runtimes=runtimes,
+                    runtime=runtime,
+                    game_row=game_row,
+                    opponent=state.opponent,
+                )
+                if new_state.status != "running":
+                    return new_state
+    return states[human_game_id]
+
+
+def _close_if_present(source: object) -> None:
+    close = getattr(source, "close", None)
+    if callable(close):
+        close()
 
 
 async def _ollama_model_options(settings: Settings) -> list[ModelOption]:

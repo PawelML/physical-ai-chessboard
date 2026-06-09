@@ -182,7 +182,7 @@ def _retryable_status(status_code: int) -> bool:
 
 
 def _retry_delay_seconds(retry: int) -> float:
-    return min(2**retry, 5)
+    return float(min(2**retry, 5))
 
 
 def parse_provider_model(value: str) -> ProviderModel:

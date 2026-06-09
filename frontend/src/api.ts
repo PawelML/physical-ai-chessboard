@@ -182,6 +182,23 @@ export type GuidanceMode = "legal_list" | "strategic_memory";
 
 export type StockfishLevel = "beginner" | "club";
 
+export type HumanColor = "white" | "black";
+
+export type HumanGameState = {
+  id: string;
+  status: GameJobStatus;
+  game_id: number;
+  human_color: HumanColor;
+  opponent: string;
+  turn: HumanColor | null;
+  result: string | null;
+  termination_reason: string | null;
+  legal_moves: string[];
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
 export type GameDefaults = {
   temperature: number;
   top_p: number | null;
@@ -207,6 +224,21 @@ export type StartStockfishMatchPayload = {
   model: string;
   stockfish_level: StockfishLevel;
   game_count: number;
+  legality_mode: "open" | "constrained";
+  temperature: number;
+  top_p: number | null;
+  num_ctx: number | null;
+  num_predict: number | null;
+  ollama_thinking: boolean;
+  ollama_cpu_offload: boolean;
+  guidance_mode: GuidanceMode;
+  max_plies: number | null;
+};
+
+export type StartHumanGamePayload = {
+  human_color: HumanColor;
+  opponent: string;
+  stockfish_level: StockfishLevel | null;
   legality_mode: "open" | "constrained";
   temperature: number;
   top_p: number | null;
@@ -323,6 +355,10 @@ export function fetchGameJobs(): Promise<GameJob[]> {
   return getJson<GameJob[]>("/games/jobs");
 }
 
+export function fetchHumanGames(): Promise<HumanGameState[]> {
+  return getJson<HumanGameState[]>("/human-games");
+}
+
 export function startGame(payload: StartGamePayload): Promise<{ job_id: string; status: string }> {
   return postJson<{ job_id: string; status: string }>("/games/start", payload);
 }
@@ -331,6 +367,18 @@ export function startStockfishMatch(
   payload: StartStockfishMatchPayload,
 ): Promise<{ job_id: string; status: string }> {
   return postJson<{ job_id: string; status: string }>("/matches/stockfish/start", payload);
+}
+
+export function startHumanGame(payload: StartHumanGamePayload): Promise<HumanGameState> {
+  return postJson<HumanGameState>("/human-games/start", payload);
+}
+
+export function playHumanMove(humanGameId: string, move: string): Promise<HumanGameState> {
+  return postJson<HumanGameState>(`/human-games/${humanGameId}/move`, { move });
+}
+
+export function cancelHumanGame(humanGameId: string): Promise<HumanGameState> {
+  return postJson<HumanGameState>(`/human-games/${humanGameId}/cancel`, {});
 }
 
 export function cancelGameJob(jobId: string): Promise<{ job_id: string; status: GameJobStatus }> {

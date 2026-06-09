@@ -390,6 +390,40 @@ h4 {
   opacity: 0.55;
 }
 
+.human-move-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #d8d2c5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.human-move-panel h3 {
+  font-size: 1rem;
+}
+
+.human-move-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.human-move-form input {
+  width: 110px;
+  min-height: 38px;
+  border: 1px solid #c9c2b4;
+  border-radius: 7px;
+  background: #fbfaf7;
+  color: #17201c;
+  padding: 0 10px;
+  font: inherit;
+}
+
 .compact {
   margin: 10px 0 0;
   font-size: 0.86rem;

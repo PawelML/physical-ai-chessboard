@@ -1,3 +1,4 @@
+import json
 import random
 import time
 from collections.abc import Awaitable, Callable
@@ -68,6 +69,14 @@ class StaticMoveSource:
             source=self.source_type,
             latency_ms=(time.perf_counter() - started) * 1000,
         )
+
+
+class _HumanMoveSource:
+    name = "human"
+    source_type = "human"
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        raise RuntimeError("human moves are submitted directly")
 
 
 class LLMMoveSource:
@@ -148,16 +157,7 @@ class ArenaGame:
         commit_after_each_ply: bool = False,
         on_game_started: Callable[[int], Awaitable[None] | None] | None = None,
     ) -> GameResult:
-        game_row = models.Game(
-            run_id=self.run_id,
-            white_participant_id=self.white_participant_id,
-            black_participant_id=self.black_participant_id,
-            opening_line_id=self.opening_line_id,
-            final_fen=self.board.fen(),
-            pgn=self._export_pgn("*"),
-        )
-        session.add(game_row)
-        await session.flush()
+        game_row = await self.start(session)
         if commit_after_each_ply:
             await session.commit()
         if on_game_started is not None:
@@ -173,7 +173,7 @@ class ArenaGame:
                     termination_reason = "max_plies"
                     break
                 move_source = self.white if self.board.turn == chess.WHITE else self.black
-                accepted = await self._play_one_ply(session, game_row.id, move_source)
+                accepted = await self.play_source_move(session, game_row.id, move_source)
                 if accepted and commit_after_each_ply:
                     game_row.final_fen = self.board.fen()
                     game_row.pgn = self._export_pgn("*")
@@ -186,11 +186,7 @@ class ArenaGame:
                 termination_reason = self._termination_reason()
         except Exception:
             if commit_after_each_ply:
-                game_row.result = "*"
-                game_row.termination_reason = "error"
-                game_row.final_fen = self.board.fen()
-                game_row.pgn = self._export_pgn("*")
-                game_row.ended_at = models.utcnow()
+                self.finish(game_row, termination_reason="error", result="*")
                 await session.commit()
             raise
         finally:
@@ -198,16 +194,7 @@ class ArenaGame:
             if self.black is not self.white:
                 _close_if_present(self.black)
 
-        if termination_reason == "max_plies":
-            game_row.result = "*"
-        elif termination_reason == "forfeit_invalid":
-            game_row.result = "0-1" if self.board.turn == chess.WHITE else "1-0"
-        else:
-            game_row.result = self.board.result(claim_draw=True)
-        game_row.termination_reason = termination_reason
-        game_row.final_fen = self.board.fen()
-        game_row.pgn = self._export_pgn(game_row.result)
-        game_row.ended_at = models.utcnow()
+        self.finish(game_row, termination_reason=termination_reason)
         if commit_after_each_ply:
             await session.commit()
         else:
@@ -216,11 +203,24 @@ class ArenaGame:
             game_id=game_row.id,
             result=game_row.result,
             termination_reason=termination_reason,
-            pgn=game_row.pgn,
+            pgn=game_row.pgn or "",
             plies=self.board.ply() - self._initial_ply,
         )
 
-    async def _play_one_ply(
+    async def start(self, session: AsyncSession) -> models.Game:
+        game_row = models.Game(
+            run_id=self.run_id,
+            white_participant_id=self.white_participant_id,
+            black_participant_id=self.black_participant_id,
+            opening_line_id=self.opening_line_id,
+            final_fen=self.board.fen(),
+            pgn=self._export_pgn("*"),
+        )
+        session.add(game_row)
+        await session.flush()
+        return game_row
+
+    async def play_source_move(
         self,
         session: AsyncSession,
         game_id: int,
@@ -296,6 +296,88 @@ class ArenaGame:
                 "remaining_retries": remaining,
             }
         return False
+
+    async def play_human_move(
+        self,
+        session: AsyncSession,
+        game_id: int,
+        move_text: str,
+    ) -> tuple[bool, str | None]:
+        started = time.perf_counter()
+        raw_response = json.dumps({"move": move_text.strip()})
+        parsed = parse_uci_json(raw_response)
+        legal_ok, legal_reason, chess_move = self._validate_move(parsed)
+        prompt_text = "Human move input"
+        attempt_row = models.Attempt(
+            game_id=game_id,
+            ply=self.board.ply() + 1,
+            attempt_number=1,
+            prompt_id=None,
+            raw_prompt_hash=text_hash(prompt_text),
+            raw_prompt=prompt_text if self.settings.prompt_retention_enabled else None,
+            raw_response=raw_response,
+            parsed_move=parsed.move,
+            parse_ok=parsed.parse_ok,
+            legal_ok=legal_ok,
+            error_type=None if legal_ok else parsed.error_type or "illegal_move",
+            feedback_given=None,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            thinking=None,
+            thinking_used=False,
+        )
+        session.add(attempt_row)
+        await session.flush()
+        self._add_token_usage(
+            session,
+            attempt_row.id,
+            prompt_text,
+            MoveProposal(
+                raw_response=raw_response,
+                source="human",
+                latency_ms=attempt_row.latency_ms,
+            ),
+        )
+        if not legal_ok or chess_move is None:
+            return False, parsed.reason or legal_reason
+        await self._accept_move(
+            session=session,
+            game_id=game_id,
+            move=chess_move,
+            move_source=_HumanMoveSource(),
+            parsed=parsed,
+            retries_used=0,
+            latency_total_ms=attempt_row.latency_ms,
+            attempts=[attempt_row],
+        )
+        return True, None
+
+    def pending_result(self) -> tuple[bool, str | None]:
+        played_plies = self.board.ply() - self._initial_ply
+        if self.max_plies is not None and played_plies >= self.max_plies:
+            return True, "max_plies"
+        if self.board.is_game_over(claim_draw=True):
+            return True, self._termination_reason()
+        return False, None
+
+    def finish(
+        self,
+        game_row: models.Game,
+        *,
+        termination_reason: str,
+        result: str | None = None,
+    ) -> None:
+        if result is None:
+            if termination_reason == "max_plies":
+                result = "*"
+            elif termination_reason == "forfeit_invalid":
+                result = "0-1" if self.board.turn == chess.WHITE else "1-0"
+            else:
+                result = self.board.result(claim_draw=True)
+        game_row.result = result
+        game_row.termination_reason = termination_reason
+        game_row.final_fen = self.board.fen()
+        game_row.pgn = self._export_pgn(game_row.result)
+        game_row.ended_at = models.utcnow()
 
     def _add_token_usage(
         self,

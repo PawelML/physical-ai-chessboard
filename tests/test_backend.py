@@ -93,6 +93,40 @@ async def test_backend_lists_and_fetches_game(tmp_path: Path) -> None:
     assert "# Match Report" in report_response.text
 
 
+async def test_backend_human_game_accepts_human_move_and_replies(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    client = TestClient(create_app(Settings(database_url=db_url, max_retries=0)))
+
+    start_response = client.post(
+        "/human-games/start",
+        json={
+            "human_color": "white",
+            "opponent": "random",
+            "max_plies": 2,
+        },
+    )
+    assert start_response.status_code == 200
+    state = start_response.json()
+    assert state["status"] == "running"
+    assert state["turn"] == "white"
+    assert "e2e4" in state["legal_moves"]
+
+    move_response = client.post(f"/human-games/{state['id']}/move", json={"move": "e2e4"})
+    assert move_response.status_code == 200
+    moved_state = move_response.json()
+    assert moved_state["status"] == "completed"
+    assert moved_state["game_id"] == state["game_id"]
+    assert moved_state["termination_reason"] == "max_plies"
+
+    detail_response = client.get(f"/games/{state['game_id']}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["white_player"] == "human"
+    assert detail["black_player"] == "random"
+    assert [move["move_source"] for move in detail["moves"]] == ["human", "random"]
+    assert detail["moves"][0]["accepted_uci"] == "e2e4"
+
+
 async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
     await init_db(db_url)

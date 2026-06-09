@@ -22,28 +22,34 @@ import {
 
 import {
   cancelGameJob,
+  cancelHumanGame,
   fetchGame,
   fetchGameJobs,
   fetchGames,
+  fetchHumanGames,
   fetchLeaderboard,
   fetchModelOptions,
   fetchRunComparison,
   fetchRunEvents,
   fetchRuntimeTelemetry,
   fetchGameDefaults,
+  playHumanMove,
   saveGameDefaults,
   startGame,
+  startHumanGame,
   startStockfishMatch,
   type GameDefaults,
   type GameDetail,
   type GameJob,
   type GuidanceMode,
+  type HumanGameState,
   type LeaderboardRow,
   type ModelOption,
   type Move,
   type RuntimeTelemetry,
   type RunComparisonRow,
   type StartGamePayload,
+  type StartHumanGamePayload,
   type StartStockfishMatchPayload,
   type StockfishLevel,
 } from "./api";
@@ -55,6 +61,11 @@ export default function App() {
   const gameJobsQuery = useQuery({
     queryKey: ["game-jobs"],
     queryFn: fetchGameJobs,
+    refetchInterval: 2_000,
+  });
+  const humanGamesQuery = useQuery({
+    queryKey: ["human-games"],
+    queryFn: fetchHumanGames,
     refetchInterval: 2_000,
   });
   const runtimeQuery = useQuery({
@@ -83,12 +94,19 @@ export default function App() {
   const [liveEvents, setLiveEvents] = useState(0);
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [activeLiveJobId, setActiveLiveJobId] = useState<string | null>(null);
+  const [activeHumanGameId, setActiveHumanGameId] = useState<string | null>(null);
   const activeLiveJob = gameJobsQuery.data?.find((job) => job.id === activeLiveJobId);
+  const activeHumanGame = humanGamesQuery.data?.find((row) => row.id === activeHumanGameId);
   const activeJobGameId =
     activeLiveJob?.status !== "failed" && activeLiveJob?.status !== "cancelled"
       ? activeLiveJob?.game_id
       : null;
-  const effectiveGameId = activeJobGameId ?? selectedGameId ?? gamesQuery.data?.[0]?.id ?? null;
+  const activeHumanGameDbId =
+    activeHumanGame?.status !== "failed" && activeHumanGame?.status !== "cancelled"
+      ? activeHumanGame?.game_id
+      : null;
+  const effectiveGameId =
+    activeHumanGameDbId ?? activeJobGameId ?? selectedGameId ?? gamesQuery.data?.[0]?.id ?? null;
 
   const gameQuery = useQuery({
     queryKey: ["game", effectiveGameId],
@@ -104,6 +122,7 @@ export default function App() {
   const refetchLeaderboard = leaderboardQuery.refetch;
   const refetchComparison = comparisonQuery.refetch;
   const refetchJobs = gameJobsQuery.refetch;
+  const refetchHumanGames = humanGamesQuery.refetch;
 
   const selectGameWhenJobStarts = (jobId: string) => {
     const poll = async (attempt: number) => {
@@ -153,6 +172,43 @@ export default function App() {
     },
   });
 
+  const startHumanGameMutation = useMutation({
+    mutationFn: startHumanGame,
+    onSuccess: (state) => {
+      setActiveLiveJobId(null);
+      setActiveHumanGameId(state.id);
+      setSelectedGameId(state.game_id);
+      setPlyIndex(0);
+      void refetchHumanGames();
+      void refetchGames();
+      void refetchGame();
+    },
+  });
+
+  const playHumanMoveMutation = useMutation({
+    mutationFn: ({ humanGameId, move }: { humanGameId: string; move: string }) =>
+      playHumanMove(humanGameId, move),
+    onSuccess: (state) => {
+      setActiveHumanGameId(state.id);
+      setSelectedGameId(state.game_id);
+      void refetchHumanGames();
+      void refetchGames();
+      void refetchGame();
+    },
+  });
+
+  const cancelHumanGameMutation = useMutation({
+    mutationFn: cancelHumanGame,
+    onSuccess: (state) => {
+      if (state.id === activeHumanGameId) {
+        setActiveHumanGameId(null);
+      }
+      void refetchHumanGames();
+      void refetchGames();
+      void refetchGame();
+    },
+  });
+
   const cancelGameMutation = useMutation({
     mutationFn: cancelGameJob,
     onSuccess: (response) => {
@@ -179,6 +235,7 @@ export default function App() {
       void refetchLeaderboard();
       void refetchComparison();
       void refetchJobs();
+      void refetchHumanGames();
     });
     source.onerror = () => source.close();
     return () => source.close();
@@ -188,12 +245,14 @@ export default function App() {
     refetchGame,
     refetchGames,
     refetchJobs,
+    refetchHumanGames,
     refetchLeaderboard,
   ]);
 
   const maxPly = game?.moves.length ?? 0;
   const followLiveGame =
-    activeLiveJob?.game_id === effectiveGameId && activeLiveJob.status !== "failed";
+    (activeLiveJob?.game_id === effectiveGameId && activeLiveJob.status !== "failed") ||
+    (activeHumanGame?.game_id === effectiveGameId && activeHumanGame.status === "running");
   const replayPlyIndex = followLiveGame ? maxPly : Math.min(plyIndex, maxPly);
   const currentMove = replayPlyIndex > 0 ? game?.moves[replayPlyIndex - 1] : undefined;
   const fen = currentMove?.fen_after ?? game?.moves[0]?.fen_before ?? startFen;
@@ -276,10 +335,19 @@ export default function App() {
             modelOptions={modelOptionsQuery.data ?? []}
             jobs={gameJobsQuery.data ?? []}
             loadingModels={modelOptionsQuery.isLoading}
-            submitting={startGameMutation.isPending || startStockfishMatchMutation.isPending}
-            error={startGameMutation.error ?? startStockfishMatchMutation.error}
+            submitting={
+              startGameMutation.isPending ||
+              startStockfishMatchMutation.isPending ||
+              startHumanGameMutation.isPending
+            }
+            error={
+              startGameMutation.error ??
+              startStockfishMatchMutation.error ??
+              startHumanGameMutation.error
+            }
             onSubmit={(payload) => startGameMutation.mutate(payload)}
             onSubmitStockfishMatch={(payload) => startStockfishMatchMutation.mutate(payload)}
+            onSubmitHumanGame={(payload) => startHumanGameMutation.mutate(payload)}
             cancellingJobId={cancelGameMutation.isPending ? cancelGameMutation.variables : null}
             onCancel={(jobId) => cancelGameMutation.mutate(jobId)}
           />
@@ -290,6 +358,7 @@ export default function App() {
             onSelect={(id) => {
               setSelectedGameId(id);
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setIsPlaying(false);
               setPlyIndex(0);
             }}
@@ -316,25 +385,30 @@ export default function App() {
             playbackDelayMs={playbackDelayMs}
             onStart={() => {
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setIsPlaying(false);
               setPlyIndex(0);
             }}
             onPrev={() => {
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setPlyIndex((value) => Math.max(0, value - 1));
             }}
             onTogglePlay={togglePlayback}
             onNext={() => {
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setPlyIndex((value) => Math.min(maxPly, value + 1));
             }}
             onEnd={() => {
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setIsPlaying(false);
               setPlyIndex(maxPly);
             }}
             onChangePly={(value) => {
               setActiveLiveJobId(null);
+              setActiveHumanGameId(null);
               setIsPlaying(false);
               setPlyIndex(value);
             }}
@@ -349,6 +423,18 @@ export default function App() {
           )}
           <strong>{liveEvents}</strong>
         </div>
+        {activeHumanGame && (
+          <HumanMovePanel
+            state={activeHumanGame}
+            submitting={playHumanMoveMutation.isPending}
+            cancelling={cancelHumanGameMutation.isPending}
+            error={playHumanMoveMutation.error}
+            onSubmit={(move) =>
+              playHumanMoveMutation.mutate({ humanGameId: activeHumanGame.id, move })
+            }
+            onCancel={() => cancelHumanGameMutation.mutate(activeHumanGame.id)}
+          />
+        )}
 
         <div className="replay-grid">
           <ChessBoard
@@ -826,6 +912,7 @@ function StartGamePanel({
   error,
   onSubmit,
   onSubmitStockfishMatch,
+  onSubmitHumanGame,
   cancellingJobId,
   onCancel,
 }: {
@@ -836,6 +923,7 @@ function StartGamePanel({
   error: Error | null;
   onSubmit: (payload: StartGamePayload) => void;
   onSubmitStockfishMatch: (payload: StartStockfishMatchPayload) => void;
+  onSubmitHumanGame: (payload: StartHumanGamePayload) => void;
   cancellingJobId: string | null | undefined;
   onCancel: (jobId: string) => void;
 }) {
@@ -843,13 +931,16 @@ function StartGamePanel({
   const matchModelOptions = modelOptions.filter(
     (option) => option.provider !== "engine" && option.id !== "random",
   );
+  const stockfishOption = modelOptions.find((option) => option.id === "stockfish");
   const defaultWhite = ollamaOptions[0]?.id ?? modelOptions[0]?.id ?? "random";
   const defaultBlack = ollamaOptions[1]?.id ?? ollamaOptions[0]?.id ?? modelOptions[1]?.id ?? defaultWhite;
   const defaultMatchModel = matchModelOptions[0]?.id ?? defaultWhite;
-  const [startMode, setStartMode] = useState<"game" | "stockfish">("game");
+  const [startMode, setStartMode] = useState<"game" | "stockfish" | "human">("game");
   const [white, setWhite] = useState<string | null>(null);
   const [black, setBlack] = useState<string | null>(null);
   const [matchModel, setMatchModel] = useState<string | null>(null);
+  const [humanOpponent, setHumanOpponent] = useState<string | null>(null);
+  const [humanColor, setHumanColor] = useState<"white" | "black">("white");
   const [stockfishLevel, setStockfishLevel] = useState<StockfishLevel>("beginner");
   const [matchGameCount, setMatchGameCount] = useState("4");
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
@@ -866,6 +957,8 @@ function StartGamePanel({
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
   const selectedMatchModel = matchModel ?? defaultMatchModel;
+  const selectedHumanOpponent =
+    humanOpponent ?? stockfishOption?.id ?? ollamaOptions[0]?.id ?? modelOptions[0]?.id ?? "random";
 
   const defaultsQuery = useQuery({ queryKey: ["game-defaults"], queryFn: fetchGameDefaults });
   const savedDefaults = defaultsQuery.data;
@@ -930,6 +1023,15 @@ function StartGamePanel({
             });
             return;
           }
+          if (startMode === "human") {
+            onSubmitHumanGame({
+              human_color: humanColor,
+              opponent: selectedHumanOpponent,
+              stockfish_level: selectedHumanOpponent === "stockfish" ? stockfishLevel : null,
+              ...sharedPayload,
+            });
+            return;
+          }
           onSubmit({
             white: selectedWhite,
             black: selectedBlack,
@@ -958,6 +1060,16 @@ function StartGamePanel({
           >
             Stockfish eval
           </button>
+          <button
+            className={startMode === "human" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={startMode === "human"}
+            disabled={submitting}
+            onClick={() => setStartMode("human")}
+          >
+            Human game
+          </button>
         </div>
 
         {startMode === "game" ? (
@@ -982,7 +1094,7 @@ function StartGamePanel({
               />
             </label>
           </fieldset>
-        ) : (
+        ) : startMode === "stockfish" ? (
           <fieldset className="start-game-group">
             <legend>Stockfish Evaluation</legend>
             <label>
@@ -1016,6 +1128,43 @@ function StartGamePanel({
                 onChange={(event) => setMatchGameCount(event.target.value)}
               />
             </label>
+          </fieldset>
+        ) : (
+          <fieldset className="start-game-group">
+            <legend>Human Player</legend>
+            <label>
+              <span>Your color</span>
+              <select
+                value={humanColor}
+                disabled={submitting}
+                onChange={(event) => setHumanColor(event.target.value as "white" | "black")}
+              >
+                <option value="white">White</option>
+                <option value="black">Black</option>
+              </select>
+            </label>
+            <label>
+              <span>Opponent</span>
+              <ModelInput
+                value={selectedHumanOpponent}
+                options={modelOptions}
+                disabled={submitting}
+                onChange={setHumanOpponent}
+              />
+            </label>
+            {stockfishOption && selectedHumanOpponent === "stockfish" && (
+              <label>
+                <span>Stockfish level</span>
+                <select
+                  value={stockfishLevel}
+                  disabled={submitting}
+                  onChange={(event) => setStockfishLevel(event.target.value as StockfishLevel)}
+                >
+                  <option value="beginner">Beginner · 1320 Elo</option>
+                  <option value="club">Club · 1600 Elo</option>
+                </select>
+              </label>
+            )}
           </fieldset>
         )}
 
@@ -1163,10 +1312,20 @@ function StartGamePanel({
           type="submit"
           disabled={
             submitting ||
-            (startMode === "game" ? !selectedWhite || !selectedBlack : !selectedMatchModel)
+            (startMode === "game"
+              ? !selectedWhite || !selectedBlack
+              : startMode === "stockfish"
+                ? !selectedMatchModel
+                : loadingModels || !selectedHumanOpponent)
           }
         >
-          {submitting ? "Starting" : startMode === "stockfish" ? "Start evaluation" : "Start game"}
+          {submitting
+            ? "Starting"
+            : startMode === "stockfish"
+              ? "Start evaluation"
+              : startMode === "human"
+                ? "Start human game"
+                : "Start game"}
         </button>
       </form>
       {loadingModels && <p className="muted compact">Loading local Ollama models.</p>}
@@ -1214,8 +1373,14 @@ function ModelInput({
   disabled: boolean;
   onChange: (value: string) => void;
 }) {
+  const hasCurrentValue = options.some((option) => option.id === value);
   return (
     <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+      {!hasCurrentValue && value && (
+        <option value={value}>
+          {value} · {value === "random" ? "built-in" : "configured"}
+        </option>
+      )}
       {options.map((option) => (
         <option key={`${option.provider}-${option.id}`} value={option.id}>
           {option.label} · {option.provider}
@@ -1366,6 +1531,88 @@ function PlyControls({
         </select>
       </div>
     </div>
+  );
+}
+
+function HumanMovePanel({
+  state,
+  submitting,
+  cancelling,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  state: HumanGameState;
+  submitting: boolean;
+  cancelling: boolean;
+  error: Error | null;
+  onSubmit: (move: string) => void;
+  onCancel: () => void;
+}) {
+  const [move, setMove] = useState("");
+  const isHumanTurn = state.status === "running" && state.turn === state.human_color;
+
+  useEffect(() => {
+    if (!submitting) {
+      setMove("");
+    }
+  }, [submitting, state.game_id, state.turn]);
+
+  return (
+    <section className="human-move-panel">
+      <div>
+        <p className="eyebrow">Human Game</p>
+        <h3>
+          You play {state.human_color} vs {state.opponent}
+        </h3>
+        <p className="muted compact">
+          {state.status === "running"
+            ? isHumanTurn
+              ? "Your move"
+              : `${state.turn ?? "Opponent"} to move`
+            : `${state.result ?? "*"} · ${state.termination_reason ?? state.status}`}
+        </p>
+      </div>
+      <form
+        className="human-move-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (move.trim()) {
+            onSubmit(move.trim());
+          }
+        }}
+      >
+        <input
+          value={move}
+          list="human-legal-moves"
+          placeholder="e2e4"
+          disabled={!isHumanTurn || submitting}
+          onChange={(event) => setMove(event.target.value)}
+          aria-label="Human move in UCI"
+        />
+        <datalist id="human-legal-moves">
+          {state.legal_moves.map((legalMove) => (
+            <option key={legalMove} value={legalMove} />
+          ))}
+        </datalist>
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={!isHumanTurn || submitting || !move.trim()}
+        >
+          {submitting ? "Playing" : "Play move"}
+        </button>
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={cancelling || state.status !== "running"}
+          onClick={onCancel}
+        >
+          {cancelling ? "Cancelling" : "Cancel"}
+        </button>
+      </form>
+      {(state.error || error) && <p className="error-text">{state.error ?? error?.message}</p>}
+    </section>
   );
 }
 
