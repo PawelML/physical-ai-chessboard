@@ -190,6 +190,7 @@ export type HumanGameState = {
   game_id: number;
   human_color: HumanColor;
   opponent: string;
+  fen?: string;
   turn: HumanColor | null;
   result: string | null;
   termination_reason: string | null;

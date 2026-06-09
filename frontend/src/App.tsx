@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft,
   ChevronRight,
@@ -9,7 +9,7 @@ import {
   SkipForward,
   Square,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -53,9 +53,10 @@ import {
   type StartStockfishMatchPayload,
   type StockfishLevel,
 } from "./api";
-import { moveSquares, parseFenBoard, startFen } from "./chess";
+import { applyUciMoveToFen, moveSquares, parseFenBoard, startFen, type Piece } from "./chess";
 
 export default function App() {
+  const queryClient = useQueryClient();
   const gamesQuery = useQuery({ queryKey: ["games"], queryFn: fetchGames });
   const modelOptionsQuery = useQuery({ queryKey: ["models"], queryFn: fetchModelOptions });
   const gameJobsQuery = useQuery({
@@ -95,6 +96,7 @@ export default function App() {
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [activeLiveJobId, setActiveLiveJobId] = useState<string | null>(null);
   const [activeHumanGameId, setActiveHumanGameId] = useState<string | null>(null);
+  const [optimisticHumanMove, setOptimisticHumanMove] = useState<OptimisticHumanMove | null>(null);
   const activeLiveJob = gameJobsQuery.data?.find((job) => job.id === activeLiveJobId);
   const activeHumanGame = humanGamesQuery.data?.find((row) => row.id === activeHumanGameId);
   const activeJobGameId =
@@ -177,8 +179,10 @@ export default function App() {
     onSuccess: (state) => {
       setActiveLiveJobId(null);
       setActiveHumanGameId(state.id);
+      setOptimisticHumanMove(null);
       setSelectedGameId(state.game_id);
       setPlyIndex(0);
+      upsertHumanGame(queryClient, state);
       void refetchHumanGames();
       void refetchGames();
       void refetchGame();
@@ -189,20 +193,27 @@ export default function App() {
     mutationFn: ({ humanGameId, move }: { humanGameId: string; move: string }) =>
       playHumanMove(humanGameId, move),
     onSuccess: (state) => {
+      setOptimisticHumanMove(null);
       setActiveHumanGameId(state.id);
       setSelectedGameId(state.game_id);
+      upsertHumanGame(queryClient, state);
       void refetchHumanGames();
       void refetchGames();
       void refetchGame();
+    },
+    onError: () => {
+      setOptimisticHumanMove(null);
     },
   });
 
   const cancelHumanGameMutation = useMutation({
     mutationFn: cancelHumanGame,
     onSuccess: (state) => {
+      setOptimisticHumanMove(null);
       if (state.id === activeHumanGameId) {
         setActiveHumanGameId(null);
       }
+      upsertHumanGame(queryClient, state);
       void refetchHumanGames();
       void refetchGames();
       void refetchGame();
@@ -255,9 +266,30 @@ export default function App() {
     (activeHumanGame?.game_id === effectiveGameId && activeHumanGame.status === "running");
   const replayPlyIndex = followLiveGame ? maxPly : Math.min(plyIndex, maxPly);
   const currentMove = replayPlyIndex > 0 ? game?.moves[replayPlyIndex - 1] : undefined;
-  const fen = currentMove?.fen_after ?? game?.moves[0]?.fen_before ?? startFen;
+  const replayFen = currentMove?.fen_after ?? game?.moves[0]?.fen_before ?? startFen;
+  const liveHumanFen = activeHumanGame?.fen ?? replayFen;
+  const activeOptimisticMove =
+    optimisticHumanMove && optimisticHumanMove.humanGameId === activeHumanGame?.id
+      ? optimisticHumanMove
+      : null;
+  const fen =
+    followLiveGame && activeHumanGame
+      ? (activeOptimisticMove?.fen ?? liveHumanFen)
+      : replayFen;
   const whitePlayer = game?.white_player ?? "White";
   const blackPlayer = game?.black_player ?? "Black";
+
+  const submitHumanMove = (move: string) => {
+    if (!activeHumanGame) {
+      return;
+    }
+    setOptimisticHumanMove({
+      humanGameId: activeHumanGame.id,
+      move,
+      fen: applyUciMoveToFen(liveHumanFen, move),
+    });
+    playHumanMoveMutation.mutate({ humanGameId: activeHumanGame.id, move });
+  };
 
   useEffect(() => {
     if (!isPlaying || replayPlyIndex >= maxPly) {
@@ -427,11 +459,9 @@ export default function App() {
           <HumanMovePanel
             state={activeHumanGame}
             submitting={playHumanMoveMutation.isPending}
+            waitingForOpponent={Boolean(activeOptimisticMove)}
             cancelling={cancelHumanGameMutation.isPending}
             error={playHumanMoveMutation.error}
-            onSubmit={(move) =>
-              playHumanMoveMutation.mutate({ humanGameId: activeHumanGame.id, move })
-            }
             onCancel={() => cancelHumanGameMutation.mutate(activeHumanGame.id)}
           />
         )}
@@ -443,6 +473,10 @@ export default function App() {
             plyIndex={replayPlyIndex}
             whitePlayer={whitePlayer}
             blackPlayer={blackPlayer}
+            humanGame={activeHumanGame}
+            submittingHumanMove={playHumanMoveMutation.isPending}
+            waitingForOpponent={Boolean(activeOptimisticMove)}
+            onSubmitHumanMove={submitHumanMove}
           />
           <div className="side-stack">
             <RuntimePanel
@@ -1537,26 +1571,19 @@ function PlyControls({
 function HumanMovePanel({
   state,
   submitting,
+  waitingForOpponent,
   cancelling,
   error,
-  onSubmit,
   onCancel,
 }: {
   state: HumanGameState;
   submitting: boolean;
+  waitingForOpponent: boolean;
   cancelling: boolean;
   error: Error | null;
-  onSubmit: (move: string) => void;
   onCancel: () => void;
 }) {
-  const [move, setMove] = useState("");
   const isHumanTurn = state.status === "running" && state.turn === state.human_color;
-
-  useEffect(() => {
-    if (!submitting) {
-      setMove("");
-    }
-  }, [submitting, state.game_id, state.turn]);
 
   return (
     <section className="human-move-panel">
@@ -1567,41 +1594,17 @@ function HumanMovePanel({
         </h3>
         <p className="muted compact">
           {state.status === "running"
-            ? isHumanTurn
-              ? "Your move"
-              : `${state.turn ?? "Opponent"} to move`
+            ? waitingForOpponent
+              ? "Opponent thinking"
+              : isHumanTurn
+                ? submitting
+                  ? "Playing"
+                  : "Your move"
+                : `${state.turn ?? "Opponent"} to move`
             : `${state.result ?? "*"} · ${state.termination_reason ?? state.status}`}
         </p>
       </div>
-      <form
-        className="human-move-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (move.trim()) {
-            onSubmit(move.trim());
-          }
-        }}
-      >
-        <input
-          value={move}
-          list="human-legal-moves"
-          placeholder="e2e4"
-          disabled={!isHumanTurn || submitting}
-          onChange={(event) => setMove(event.target.value)}
-          aria-label="Human move in UCI"
-        />
-        <datalist id="human-legal-moves">
-          {state.legal_moves.map((legalMove) => (
-            <option key={legalMove} value={legalMove} />
-          ))}
-        </datalist>
-        <button
-          className="primary-button"
-          type="submit"
-          disabled={!isHumanTurn || submitting || !move.trim()}
-        >
-          {submitting ? "Playing" : "Play move"}
-        </button>
+      <div className="human-move-actions">
         <button
           className="secondary-button"
           type="button"
@@ -1610,7 +1613,7 @@ function HumanMovePanel({
         >
           {cancelling ? "Cancelling" : "Cancel"}
         </button>
-      </form>
+      </div>
       {(state.error || error) && <p className="error-text">{state.error ?? error?.message}</p>}
     </section>
   );
@@ -1622,46 +1625,332 @@ function ChessBoard({
   plyIndex,
   whitePlayer,
   blackPlayer,
+  humanGame,
+  submittingHumanMove = false,
+  waitingForOpponent = false,
+  onSubmitHumanMove,
 }: {
   fen: string;
   activeMove: Move | undefined;
   plyIndex: number;
   whitePlayer: string;
   blackPlayer: string;
+  humanGame?: HumanGameState | null;
+  submittingHumanMove?: boolean;
+  waitingForOpponent?: boolean;
+  onSubmitHumanMove?: (move: string) => void;
 }) {
   const squares = useMemo(() => parseFenBoard(fen), [fen]);
+  const orientation = humanGame?.human_color ?? "white";
+  const displayedSquares = useMemo(
+    () => (orientation === "white" ? squares : [...squares].reverse()),
+    [orientation, squares],
+  );
   const highlighted = useMemo(() => moveSquares(activeMove?.accepted_uci), [activeMove]);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [dragVisible, setDragVisible] = useState(false);
+  const [promotion, setPromotion] = useState<PromotionPrompt | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const dragMovedRef = useRef(false);
+  const suppressClickRef = useRef(false);
+  const pointerSelectedRef = useRef<string | null>(null);
+  const legalMoves = useMemo(() => humanGame?.legal_moves ?? [], [humanGame?.legal_moves]);
+  const humanColor = humanGame?.human_color ?? "white";
+  const isHumanTurn = humanGame?.status === "running" && humanGame.turn === humanGame.human_color;
+  const canInteract =
+    Boolean(humanGame && onSubmitHumanMove) && isHumanTurn && !submittingHumanMove;
+  const legalMovesBySource = useMemo(() => {
+    const grouped = new Map<string, string[]>();
+    for (const legalMove of legalMoves) {
+      const source = legalMove.slice(0, 2);
+      grouped.set(source, [...(grouped.get(source) ?? []), legalMove]);
+    }
+    return grouped;
+  }, [legalMoves]);
+  const legalSources = useMemo(() => new Set(legalMovesBySource.keys()), [legalMovesBySource]);
+  const effectiveSelectedSquare =
+    selectedSquare && legalSources.has(selectedSquare) ? selectedSquare : null;
+  const selectedMoves = useMemo(
+    () => (effectiveSelectedSquare ? (legalMovesBySource.get(effectiveSelectedSquare) ?? []) : []),
+    [effectiveSelectedSquare, legalMovesBySource],
+  );
+  const legalTargets = useMemo(
+    () => new Set(selectedMoves.map((legalMove) => legalMove.slice(2, 4))),
+    [selectedMoves],
+  );
+  const activeStripColor =
+    waitingForOpponent && humanGame
+      ? humanGame.human_color === "white"
+        ? "black"
+        : "white"
+      : humanGame?.status === "running"
+      ? humanGame.turn
+      : plyIndex === 0
+        ? "white"
+        : activeMove?.color;
+
+  const submitMove = useCallback(
+    (move: string) => {
+      if (!onSubmitHumanMove) {
+        return;
+      }
+      setSelectedSquare(null);
+      setPromotion(null);
+      setDrag(null);
+      setDragVisible(false);
+      dragRef.current = null;
+      onSubmitHumanMove(move);
+    },
+    [onSubmitHumanMove],
+  );
+
+  const attemptMove = useCallback(
+    (from: string, to: string) => {
+      if (!canInteract) {
+        return;
+      }
+      const candidates = legalMoves.filter((legalMove) => legalMove.startsWith(`${from}${to}`));
+      if (candidates.length === 0) {
+        if (legalSources.has(to)) {
+          setSelectedSquare(to);
+        }
+        return;
+      }
+      if (candidates.length === 1) {
+        submitMove(candidates[0]);
+        return;
+      }
+      setPromotion({ from, to, moves: candidates, color: humanColor });
+    },
+    [canInteract, humanColor, legalMoves, legalSources, submitMove],
+  );
+
+  const draggingFrom = drag?.from;
+  useEffect(() => {
+    if (!draggingFrom) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const current = dragRef.current;
+      if (!current) {
+        return;
+      }
+      if (Math.hypot(event.clientX - current.startX, event.clientY - current.startY) > 5) {
+        dragMovedRef.current = true;
+        setDragVisible(true);
+      }
+      setDrag((value) => {
+        if (!value) {
+          return value;
+        }
+        const next = { ...value, x: event.clientX, y: event.clientY };
+        dragRef.current = next;
+        return next;
+      });
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const current = dragRef.current;
+      if (current && dragMovedRef.current) {
+        const targetSquare = squareFromPoint(event.clientX, event.clientY);
+        if (targetSquare) {
+          attemptMove(current.from, targetSquare);
+        }
+        suppressClickRef.current = true;
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }
+      dragRef.current = null;
+      setDrag(null);
+      setDragVisible(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [attemptMove, draggingFrom]);
+
+  const handleSquareClick = (square: string, piece: Piece | null) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      pointerSelectedRef.current = null;
+      return;
+    }
+    if (!canInteract || promotion) {
+      return;
+    }
+    if (pointerSelectedRef.current === square) {
+      pointerSelectedRef.current = null;
+      return;
+    }
+    const isLegalSource = Boolean(piece && piece.color === humanColor && legalSources.has(square));
+    if (!effectiveSelectedSquare) {
+      if (isLegalSource) {
+        setSelectedSquare(square);
+      }
+      return;
+    }
+    if (effectiveSelectedSquare === square) {
+      setSelectedSquare(null);
+      return;
+    }
+    if (legalTargets.has(square)) {
+      attemptMove(effectiveSelectedSquare, square);
+      return;
+    }
+    setSelectedSquare(isLegalSource ? square : null);
+  };
 
   return (
     <div className="board-wrap">
-      <PlayerStrip color="black" name={blackPlayer} active={activeMove?.color === "black"} />
-      <div className="board" aria-label="Chess board">
-        {squares.map((square, index) => {
+      <PlayerStrip
+        color={orientation === "white" ? "black" : "white"}
+        name={orientation === "white" ? blackPlayer : whitePlayer}
+        active={activeStripColor === (orientation === "white" ? "black" : "white")}
+      />
+      <div className={canInteract ? "board interactive" : "board"} aria-label="Chess board">
+        {displayedSquares.map((square, index) => {
           const file = index % 8;
           const rank = Math.floor(index / 8);
           const dark = (file + rank) % 2 === 1;
+          const isLegalSource = Boolean(
+            canInteract &&
+              square.piece &&
+              square.piece.color === humanColor &&
+              legalSources.has(square.square),
+          );
+          const isLegalTarget = legalTargets.has(square.square);
+          const isDraggingSource = drag?.from === square.square;
           return (
-            <div
+            <button
               key={square.square}
+              type="button"
+              data-square={square.square}
               className={[
                 "square",
                 dark ? "dark" : "light",
                 highlighted.has(square.square) ? "highlight" : "",
+                effectiveSelectedSquare === square.square ? "selected" : "",
+                isLegalSource ? "legal-source" : "",
+                isLegalTarget ? "legal-target" : "",
+                isLegalTarget && square.piece ? "legal-capture" : "",
+                isDraggingSource ? "dragging-source" : "",
               ].join(" ")}
+              onClick={() => handleSquareClick(square.square, square.piece)}
+              onPointerDown={(event) => {
+                if (!isLegalSource || !square.piece || event.button !== 0) {
+                  return;
+                }
+                event.preventDefault();
+                const next: DragState = {
+                  from: square.square,
+                  piece: square.piece,
+                  x: event.clientX,
+                  y: event.clientY,
+                  startX: event.clientX,
+                  startY: event.clientY,
+                };
+                dragMovedRef.current = false;
+                setDragVisible(false);
+                dragRef.current = next;
+                setDrag(next);
+                setPromotion(null);
+                if (effectiveSelectedSquare !== square.square) {
+                  pointerSelectedRef.current = square.square;
+                  setSelectedSquare(square.square);
+                } else {
+                  pointerSelectedRef.current = null;
+                }
+              }}
+              aria-label={`${square.square}${square.piece ? ` ${square.piece.color}` : ""}`}
             >
-              <span className={`piece ${square.piece?.color ?? ""}`}>{square.piece?.symbol}</span>
+              <span className={`piece ${square.piece?.color ?? ""}`} aria-hidden="true">
+                {square.piece?.symbol}
+              </span>
               <span className="coord">{square.square}</span>
-            </div>
+            </button>
           );
         })}
+        {promotion && (
+          <div className="promotion-menu" role="dialog" aria-label="Choose promotion piece">
+            {promotion.moves.map((legalMove) => (
+              <button
+                key={legalMove}
+                type="button"
+                onClick={() => submitMove(legalMove)}
+                aria-label={`Promote to ${promotionName(legalMove)}`}
+                title={`Promote to ${promotionName(legalMove)}`}
+              >
+                {promotionSymbol(legalMove, promotion.color)}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
+      {drag && dragVisible && (
+        <div
+          className={`piece drag-piece ${drag.piece.color}`}
+          style={{ left: drag.x, top: drag.y }}
+          aria-hidden="true"
+          data-from={drag.from}
+        >
+          {drag.piece.symbol}
+        </div>
+      )}
       <PlayerStrip
-        color="white"
-        name={whitePlayer}
-        active={plyIndex === 0 || activeMove?.color === "white"}
+        color={orientation === "white" ? "white" : "black"}
+        name={orientation === "white" ? whitePlayer : blackPlayer}
+        active={activeStripColor === (orientation === "white" ? "white" : "black")}
       />
     </div>
   );
+}
+
+type DragState = {
+  from: string;
+  piece: Piece;
+  x: number;
+  y: number;
+  startX: number;
+  startY: number;
+};
+
+type PromotionPrompt = {
+  from: string;
+  to: string;
+  moves: string[];
+  color: "white" | "black";
+};
+
+function squareFromPoint(x: number, y: number): string | null {
+  const element = document.elementFromPoint(x, y);
+  const square = element?.closest<HTMLElement>("[data-square]");
+  return square?.dataset.square ?? null;
+}
+
+function promotionSymbol(move: string, color: "white" | "black") {
+  const piece = move.at(-1) ?? "q";
+  const symbols: Record<"white" | "black", Record<string, string>> = {
+    white: { q: "♕", r: "♖", b: "♗", n: "♘" },
+    black: { q: "♛", r: "♜", b: "♝", n: "♞" },
+  };
+  return symbols[color][piece] ?? symbols[color].q;
+}
+
+function promotionName(move: string) {
+  const names: Record<string, string> = {
+    q: "queen",
+    r: "rook",
+    b: "bishop",
+    n: "knight",
+  };
+  return names[move.at(-1) ?? "q"] ?? "queen";
 }
 
 function PlayerStrip({
@@ -1863,6 +2152,23 @@ function BenchmarkPanel({
       <RunComparison rows={comparisonRows} />
     </div>
   );
+}
+
+type OptimisticHumanMove = {
+  humanGameId: string;
+  move: string;
+  fen: string;
+};
+
+function upsertHumanGame(queryClient: QueryClient, state: HumanGameState) {
+  queryClient.setQueryData<HumanGameState[]>(["human-games"], (current) => {
+    const rows = current ?? [];
+    const index = rows.findIndex((row) => row.id === state.id);
+    if (index === -1) {
+      return [state, ...rows];
+    }
+    return rows.map((row) => (row.id === state.id ? state : row));
+  });
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {

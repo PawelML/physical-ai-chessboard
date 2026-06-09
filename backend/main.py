@@ -161,6 +161,7 @@ class HumanGameState(BaseModel):
     game_id: int
     human_color: HumanColor
     opponent: str
+    fen: str
     turn: HumanColor | None
     result: str | None = None
     termination_reason: str | None = None
@@ -1037,6 +1038,7 @@ def _human_game_state(
         game_id=game_id,
         human_color=_color_name(human_color),
         opponent=opponent,
+        fen=arena.board.fen(),
         turn=turn,
         result=result,
         termination_reason=termination_reason,

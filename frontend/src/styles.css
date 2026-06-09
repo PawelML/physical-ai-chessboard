@@ -406,22 +406,11 @@ h4 {
   font-size: 1rem;
 }
 
-.human-move-form {
+.human-move-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-}
-
-.human-move-form input {
-  width: 110px;
-  min-height: 38px;
-  border: 1px solid #c9c2b4;
-  border-radius: 7px;
-  background: #fbfaf7;
-  color: #17201c;
-  padding: 0 10px;
-  font: inherit;
 }
 
 .compact {
@@ -747,6 +736,7 @@ h4 {
 }
 
 .board {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   grid-template-rows: repeat(8, minmax(0, 1fr));
@@ -756,6 +746,10 @@ h4 {
   background: #27332e;
 }
 
+.board.interactive {
+  touch-action: none;
+}
+
 .square {
   position: relative;
   display: flex;
@@ -763,7 +757,13 @@ h4 {
   justify-content: center;
   min-width: 0;
   min-height: 0;
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
+  padding: 0;
+  color: inherit;
+  cursor: default;
+  font: inherit;
 }
 
 .square.light {
@@ -782,11 +782,50 @@ h4 {
   content: "";
 }
 
+.square.legal-source {
+  cursor: grab;
+}
+
+.square.legal-source:active {
+  cursor: grabbing;
+}
+
+.square.selected::before {
+  position: absolute;
+  inset: 6%;
+  border: 4px solid rgba(217, 159, 32, 0.9);
+  border-radius: 6px;
+  content: "";
+  z-index: 2;
+}
+
+.square.legal-target::before {
+  position: absolute;
+  width: 30%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: rgba(23, 32, 28, 0.34);
+  content: "";
+  z-index: 2;
+}
+
+.square.legal-capture::before {
+  inset: 10%;
+  width: auto;
+  border: 5px solid rgba(139, 35, 35, 0.78);
+  background: transparent;
+}
+
+.square.dragging-source .piece {
+  opacity: 0.2;
+}
+
 .piece {
   display: block;
   line-height: 1;
   font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", serif;
   font-size: clamp(1.9rem, 6vw, 4.25rem);
+  pointer-events: none;
   z-index: 1;
 }
 
@@ -797,6 +836,48 @@ h4 {
 
 .piece.black {
   color: #17201c;
+}
+
+.drag-piece {
+  position: fixed;
+  z-index: 40;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 10px 14px rgba(23, 32, 28, 0.35));
+  pointer-events: none;
+}
+
+.promotion-menu {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(46px, 1fr));
+  gap: 6px;
+  width: min(320px, calc(100% - 28px));
+  padding: 8px;
+  border: 1px solid #27332e;
+  border-radius: 8px;
+  background: rgba(255, 253, 247, 0.96);
+  box-shadow: 0 14px 32px rgba(23, 32, 28, 0.24);
+  transform: translate(-50%, -50%);
+}
+
+.promotion-menu button {
+  min-height: 54px;
+  border: 1px solid #c9c2b4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17201c;
+  cursor: pointer;
+  font-family: "Noto Sans Symbols 2", "Segoe UI Symbol", serif;
+  font-size: 2.3rem;
+  line-height: 1;
+}
+
+.promotion-menu button:hover {
+  border-color: #1e6b58;
+  background: #edf6f2;
 }
 
 .coord {
