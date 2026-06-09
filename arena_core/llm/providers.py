@@ -145,6 +145,11 @@ def llm_service_for(value: str, settings: Settings) -> tuple[str, LLMService]:
             OllamaLLMService(
                 base_url=settings.ollama_base_url,
                 timeout_seconds=settings.ollama_timeout_seconds,
+                temperature=settings.ollama_temperature,
+                top_p=settings.ollama_top_p,
+                num_ctx=settings.ollama_num_ctx,
+                num_predict=settings.ollama_num_predict,
+                think=settings.ollama_think,
             ),
         )
     if not settings.api_providers_enabled:

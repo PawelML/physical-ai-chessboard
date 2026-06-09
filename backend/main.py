@@ -32,6 +32,7 @@ from arena_core.reports import export_game_report
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed"]
+OllamaPreset = Literal["strict", "low_creativity", "thinking_if_supported"]
 
 
 class GameJob(BaseModel):
@@ -40,6 +41,7 @@ class GameJob(BaseModel):
     white: str
     black: str
     legality_mode: str
+    ollama_preset: OllamaPreset
     max_plies: int | None
     game_id: int | None = None
     result: str | None = None
@@ -59,6 +61,7 @@ class StartGameRequest(BaseModel):
     white: str
     black: str
     legality_mode: Literal["open", "constrained"] = "constrained"
+    ollama_preset: OllamaPreset = "strict"
     max_plies: int | None = None
     stockfish_path: str | None = None
 
@@ -286,6 +289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             white=white,
             black=black,
             legality_mode=payload.legality_mode,
+            ollama_preset=payload.ollama_preset,
             max_plies=payload.max_plies,
             created_at=_utcnow_iso(),
         )
@@ -298,6 +302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 white=white,
                 black=black,
                 legality_mode=payload.legality_mode,
+                ollama_preset=payload.ollama_preset,
                 max_plies=payload.max_plies,
                 stockfish_path=payload.stockfish_path,
             )
@@ -663,6 +668,7 @@ async def _run_game_job(
     white: str,
     black: str,
     legality_mode: str,
+    ollama_preset: OllamaPreset,
     max_plies: int | None,
     stockfish_path: str | None,
 ) -> None:
@@ -671,7 +677,7 @@ async def _run_game_job(
             jobs[job_id] = jobs[job_id].model_copy(update={"game_id": game_id})
 
         result, _attempt_log = await _play_async(
-            settings=settings,
+            settings=_settings_for_ollama_preset(settings, ollama_preset),
             db_url=settings.database_url,
             white_name=white,
             black_name=black,
@@ -698,6 +704,38 @@ async def _run_game_job(
             "result": result.result,
             "termination_reason": result.termination_reason,
             "completed_at": _utcnow_iso(),
+        }
+    )
+
+
+def _settings_for_ollama_preset(settings: Settings, preset: OllamaPreset) -> Settings:
+    if preset == "low_creativity":
+        return settings.model_copy(
+            update={
+                "ollama_temperature": 0.2,
+                "ollama_top_p": 0.9,
+                "ollama_num_ctx": 32768,
+                "ollama_num_predict": 128,
+                "ollama_think": "off",
+            }
+        )
+    if preset == "thinking_if_supported":
+        return settings.model_copy(
+            update={
+                "ollama_temperature": 0.2,
+                "ollama_top_p": 0.9,
+                "ollama_num_ctx": 32768,
+                "ollama_num_predict": 512,
+                "ollama_think": "auto",
+            }
+        )
+    return settings.model_copy(
+        update={
+            "ollama_temperature": 0.0,
+            "ollama_top_p": None,
+            "ollama_num_ctx": None,
+            "ollama_num_predict": None,
+            "ollama_think": "off",
         }
     )
 

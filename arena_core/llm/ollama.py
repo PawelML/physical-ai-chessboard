@@ -20,11 +20,34 @@ class OllamaModelMetadata:
 
 
 class OllamaLLMService(LLMService):
-    def __init__(self, *, base_url: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float,
+        temperature: float = 0.0,
+        top_p: float | None = None,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
+        think: str = "off",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        self._temperature = temperature
+        self._top_p = top_p
+        self._num_ctx = num_ctx
+        self._num_predict = num_predict
+        self._think = think
 
     async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+        options: dict[str, float | int] = {"temperature": self._temperature}
+        if self._top_p is not None:
+            options["top_p"] = self._top_p
+        if self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx
+        if self._num_predict is not None:
+            options["num_predict"] = self._num_predict
+
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/generate",
@@ -33,25 +56,33 @@ class OllamaLLMService(LLMService):
                     "prompt": prompt,
                     "stream": False,
                     "format": "json",
-                    "think": False,
-                    "options": {"temperature": 0},
+                    "think": self._should_think(model),
+                    "options": options,
                 },
             )
             response.raise_for_status()
         payload = response.json()
+        content = str(payload.get("response") or payload.get("thinking") or "")
         prompt_eval_count = payload.get("prompt_eval_count")
         eval_count = payload.get("eval_count")
         total_tokens = None
         if prompt_eval_count is not None and eval_count is not None:
             total_tokens = prompt_eval_count + eval_count
         return LLMResponse(
-            content=str(payload.get("response", "")),
+            content=content,
             stop_reason="done" if payload.get("done") else None,
             raw_response=payload,
             prompt_tokens=prompt_eval_count,
             completion_tokens=eval_count,
             total_tokens=total_tokens,
         )
+
+    def _should_think(self, model: str) -> bool:
+        if self._think == "on":
+            return True
+        if self._think == "auto":
+            return "qwen" in model.lower()
+        return False
 
 
 async def fetch_ollama_model_metadata(

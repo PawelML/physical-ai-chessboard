@@ -34,6 +34,7 @@ import {
   type LeaderboardRow,
   type ModelOption,
   type Move,
+  type OllamaPreset,
   type RuntimeTelemetry,
   type RunComparisonRow,
   type StartGamePayload,
@@ -758,6 +759,7 @@ function StartGamePanel({
   const [white, setWhite] = useState<string | null>(null);
   const [black, setBlack] = useState<string | null>(null);
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
+  const [ollamaPreset, setOllamaPreset] = useState<OllamaPreset>("strict");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
@@ -778,6 +780,7 @@ function StartGamePanel({
             white: selectedWhite,
             black: selectedBlack,
             legality_mode: legalityMode,
+            ollama_preset: ollamaPreset,
             max_plies: maxPlies ? Number(maxPlies) : null,
           });
         }}
@@ -790,6 +793,18 @@ function StartGamePanel({
             disabled={submitting}
             onChange={setWhite}
           />
+        </label>
+        <label>
+          <span>Ollama preset</span>
+          <select
+            value={ollamaPreset}
+            disabled={submitting}
+            onChange={(event) => setOllamaPreset(event.target.value as OllamaPreset)}
+          >
+            <option value="strict">Strict deterministic</option>
+            <option value="low_creativity">Low creativity</option>
+            <option value="thinking_if_supported">Thinking if supported</option>
+          </select>
         </label>
         <label>
           <span>Black</span>
@@ -835,7 +850,7 @@ function StartGamePanel({
               <span>
                 {job.white} vs {job.black}
               </span>
-              <strong>{jobLabel(job)}</strong>
+              <strong>{job.ollama_preset} · {jobLabel(job)}</strong>
             </div>
           ))}
         </div>
