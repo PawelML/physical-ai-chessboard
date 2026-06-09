@@ -170,6 +170,28 @@ export type StartGamePayload = {
   max_plies: number | null;
 };
 
+export type GpuTelemetry = {
+  name: string;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  utilization_percent: number | null;
+};
+
+export type OllamaRuntimeModel = {
+  name: string;
+  size_bytes: number | null;
+  size_vram_bytes: number | null;
+  processor: string | null;
+  context_window: number | null;
+  expires_at: string | null;
+};
+
+export type RuntimeTelemetry = {
+  sampled_at: string;
+  gpus: GpuTelemetry[];
+  ollama_models: OllamaRuntimeModel[];
+};
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`/api${path}`);
   if (!response.ok) {
@@ -227,6 +249,10 @@ export function fetchRunComparison(): Promise<RunComparisonRow[]> {
 
 export function fetchModelOptions(): Promise<ModelOption[]> {
   return getJson<ModelOption[]>("/models");
+}
+
+export function fetchRuntimeTelemetry(): Promise<RuntimeTelemetry> {
+  return getJson<RuntimeTelemetry>("/runtime/telemetry");
 }
 
 export function fetchGameJobs(): Promise<GameJob[]> {

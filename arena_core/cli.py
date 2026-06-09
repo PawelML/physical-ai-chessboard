@@ -1,6 +1,6 @@
 import asyncio
-from pathlib import Path
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Annotated, cast
 
 import typer

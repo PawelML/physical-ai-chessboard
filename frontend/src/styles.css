@@ -314,6 +314,53 @@ h4 {
   align-items: start;
 }
 
+.side-stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.workspace-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 4px;
+  margin-top: 22px;
+  padding: 4px;
+  border: 1px solid #d8d2c5;
+  border-radius: 8px;
+  background: #f5f4f0;
+}
+
+.workspace-tabs button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5f6f68;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.workspace-tabs button.active {
+  background: #ffffff;
+  color: #1e6b58;
+  box-shadow: 0 1px 2px rgba(23, 32, 28, 0.08);
+}
+
+.detail-stack {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.detail-panel,
+.detail-stack > .leaderboard,
+.detail-stack > .eval-graph,
+.detail-stack > .events-panel,
+.detail-stack > .comparison-panel {
+  margin-top: 0;
+}
+
 .leaderboard {
   margin-top: 22px;
   padding: 18px;
@@ -638,12 +685,177 @@ h4 {
   display: block;
   margin-top: 6px;
   font-size: 1.05rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px;
+}
+
+.runtime-panel {
+  background: #fbfaf7;
+}
+
+.runtime-sample {
+  color: #1e6b58;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.runtime-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.model-runtime-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.model-runtime-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e3ded4;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.model-runtime-card.white {
+  border-left: 4px solid #d8d2c5;
+}
+
+.model-runtime-card.black {
+  border-left: 4px solid #17201c;
+}
+
+.model-runtime-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+
+.model-runtime-head strong,
+.model-runtime-head span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-runtime-head div span {
+  color: #68756f;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.status-pill {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #e9ece7;
+  color: #27332e;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.status-pill.generating {
+  background: #ddf1e8;
+  color: #1e6b58;
+}
+
+.status-pill.waiting {
+  background: #fff0cf;
+  color: #775000;
+}
+
+.status-pill.failed {
+  background: #f7dddd;
+  color: #8b2323;
+}
+
+.model-runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.model-runtime-metrics .metric {
+  padding: 10px;
+}
+
+.model-runtime-metrics .metric strong {
+  font-size: 0.96rem;
+}
+
+.model-runtime-facts {
+  grid-template-columns: 112px minmax(0, 1fr);
+  font-size: 0.86rem;
+}
+
+.runtime-sections {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.resource-list,
+.runtime-model-list {
+  display: grid;
+  gap: 8px;
+}
+
+.resource-meter,
+.runtime-model-row {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e3ded4;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.resource-meter strong,
+.runtime-model-row strong {
+  display: block;
+  overflow: hidden;
+  color: #17201c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-meter span,
+.runtime-model-row span {
+  display: block;
+  overflow: hidden;
+  color: #68756f;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meter-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e3ded4;
+}
+
+.meter-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #1e6b58;
 }
 
 dl {
@@ -821,6 +1033,10 @@ dd {
   .replay-grid {
     grid-template-columns: 1fr;
   }
+
+  .workspace-tabs {
+    display: grid;
+  }
 }
 
 @media (max-width: 620px) {
@@ -846,8 +1062,14 @@ dd {
   }
 
   .metric-grid,
-  .detail-grid {
+  .detail-grid,
+  .model-runtime-grid,
+  .runtime-sections {
     grid-template-columns: 1fr;
+  }
+
+  .runtime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .attempt-row {

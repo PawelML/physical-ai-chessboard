@@ -1,8 +1,9 @@
 import asyncio
 import json
+import shutil
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
@@ -65,6 +66,28 @@ class StartGameRequest(BaseModel):
 class StartGameResponse(BaseModel):
     job_id: str
     status: GameJobStatus
+
+
+class GpuTelemetry(BaseModel):
+    name: str
+    memory_used_mb: int
+    memory_total_mb: int
+    utilization_percent: int | None
+
+
+class OllamaRuntimeModel(BaseModel):
+    name: str
+    size_bytes: int | None = None
+    size_vram_bytes: int | None = None
+    processor: str | None = None
+    context_window: int | None = None
+    expires_at: str | None = None
+
+
+class RuntimeTelemetry(BaseModel):
+    sampled_at: str
+    gpus: list[GpuTelemetry]
+    ollama_models: list[OllamaRuntimeModel]
 
 
 class GameListItem(BaseModel):
@@ -228,6 +251,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             options.append(ModelOption(id="stockfish", label="stockfish", provider="engine"))
         options.extend(await _ollama_model_options(effective_settings))
         return options
+
+    @api.get("/runtime/telemetry")
+    async def runtime_telemetry() -> RuntimeTelemetry:
+        gpus, ollama_models = await asyncio.gather(
+            _gpu_telemetry(),
+            _ollama_runtime_models(effective_settings),
+        )
+        return RuntimeTelemetry(
+            sampled_at=_utcnow_iso(),
+            gpus=gpus,
+            ollama_models=ollama_models,
+        )
 
     @api.get("/games/jobs")
     async def list_game_jobs() -> list[GameJob]:
@@ -557,6 +592,69 @@ async def _ollama_model_options(settings: Settings) -> list[ModelOption]:
     return sorted(options, key=lambda option: option.label)
 
 
+async def _gpu_telemetry() -> list[GpuTelemetry]:
+    if shutil.which("nvidia-smi") is None:
+        return []
+    process = await asyncio.create_subprocess_exec(
+        "nvidia-smi",
+        "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+        "--format=csv,noheader,nounits",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _stderr = await process.communicate()
+    if process.returncode != 0:
+        return []
+
+    gpus: list[GpuTelemetry] = []
+    for line in stdout.decode().splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 4:
+            continue
+        try:
+            gpus.append(
+                GpuTelemetry(
+                    name=parts[0],
+                    memory_used_mb=int(parts[1]),
+                    memory_total_mb=int(parts[2]),
+                    utilization_percent=int(parts[3]),
+                )
+            )
+        except ValueError:
+            continue
+    return gpus
+
+
+async def _ollama_runtime_models(settings: Settings) -> list[OllamaRuntimeModel]:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/ps")
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return []
+
+    payload = response.json()
+    models: list[OllamaRuntimeModel] = []
+    for item in payload.get("models", []):
+        if not isinstance(item, dict):
+            continue
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        context_window = item.get("context_length") or item.get("context")
+        processor = item.get("processor")
+        expires_at = item.get("expires_at")
+        models.append(
+            OllamaRuntimeModel(
+                name=str(item.get("name") or item.get("model") or "unknown"),
+                size_bytes=_optional_int(item.get("size")),
+                size_vram_bytes=_optional_int(item.get("size_vram")),
+                processor=(str(processor) if processor is not None else None),
+                context_window=_optional_int(context_window or details.get("context_length")),
+                expires_at=(str(expires_at) if expires_at is not None else None),
+            )
+        )
+    return models
+
+
 async def _run_game_job(
     *,
     job_id: str,
@@ -780,7 +878,17 @@ def _pgn_header(pgn: str | None, tag: str) -> str | None:
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 app = create_app()

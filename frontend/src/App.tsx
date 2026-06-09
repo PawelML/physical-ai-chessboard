@@ -27,12 +27,14 @@ import {
   fetchModelOptions,
   fetchRunComparison,
   fetchRunEvents,
+  fetchRuntimeTelemetry,
   startGame,
   type GameDetail,
   type GameJob,
   type LeaderboardRow,
   type ModelOption,
   type Move,
+  type RuntimeTelemetry,
   type RunComparisonRow,
   type StartGamePayload,
 } from "./api";
@@ -44,6 +46,11 @@ export default function App() {
   const gameJobsQuery = useQuery({
     queryKey: ["game-jobs"],
     queryFn: fetchGameJobs,
+    refetchInterval: 2_000,
+  });
+  const runtimeQuery = useQuery({
+    queryKey: ["runtime-telemetry"],
+    queryFn: fetchRuntimeTelemetry,
     refetchInterval: 2_000,
   });
   const [leaderboardRunId, setLeaderboardRunId] = useState<number | "all">("all");
@@ -63,6 +70,7 @@ export default function App() {
     queryFn: fetchRunComparison,
   });
   const [sidebarTab, setSidebarTab] = useState<"start" | "history">("start");
+  const [workspaceTab, setWorkspaceTab] = useState<"debug" | "analysis" | "benchmark">("debug");
   const [liveEvents, setLiveEvents] = useState(0);
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [activeLiveJobId, setActiveLiveJobId] = useState<string | null>(null);
@@ -300,32 +308,254 @@ export default function App() {
             whitePlayer={whitePlayer}
             blackPlayer={blackPlayer}
           />
-          <MovePanel
-            game={game}
-            plyIndex={replayPlyIndex}
-            currentMove={currentMove}
-            onSelectPly={(value) => {
-              setActiveLiveJobId(null);
-              setIsPlaying(false);
-              setPlyIndex(value);
-            }}
-          />
+          <div className="side-stack">
+            <RuntimePanel
+              telemetry={runtimeQuery.data}
+              game={game}
+              currentMove={currentMove}
+              activeJob={activeLiveJob}
+            />
+            <MoveListPanel
+              game={game}
+              plyIndex={replayPlyIndex}
+              onSelectPly={(value) => {
+                setActiveLiveJobId(null);
+                setIsPlaying(false);
+                setPlyIndex(value);
+              }}
+            />
+          </div>
         </div>
-        <EvalGraph game={game} />
-        <Leaderboard
-          rows={leaderboardQuery.data ?? []}
-          runId={leaderboardRunId}
-          color={leaderboardColor}
-          legalityMode={leaderboardLegality}
-          runOptions={uniqueRunIds(gamesQuery.data ?? [])}
-          onRunIdChange={setLeaderboardRunId}
-          onColorChange={setLeaderboardColor}
-          onLegalityModeChange={setLeaderboardLegality}
-        />
-        <OperationalEventsPanel game={game} />
-        <RunComparison rows={comparisonQuery.data ?? []} />
+
+        <div className="workspace-tabs" role="tablist" aria-label="Game detail sections">
+          <button
+            className={workspaceTab === "debug" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "debug"}
+            onClick={() => setWorkspaceTab("debug")}
+          >
+            Move Debug
+          </button>
+          <button
+            className={workspaceTab === "analysis" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "analysis"}
+            onClick={() => setWorkspaceTab("analysis")}
+          >
+            Analysis
+          </button>
+          <button
+            className={workspaceTab === "benchmark" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "benchmark"}
+            onClick={() => setWorkspaceTab("benchmark")}
+          >
+            Benchmark
+          </button>
+        </div>
+
+        {workspaceTab === "debug" && <MoveDebugPanel currentMove={currentMove} />}
+        {workspaceTab === "analysis" && (
+          <AnalysisPanel game={game} currentMove={currentMove} />
+        )}
+        {workspaceTab === "benchmark" && (
+          <BenchmarkPanel
+            game={game}
+            leaderboardRows={leaderboardQuery.data ?? []}
+            comparisonRows={comparisonQuery.data ?? []}
+            leaderboardRunId={leaderboardRunId}
+            leaderboardColor={leaderboardColor}
+            leaderboardLegality={leaderboardLegality}
+            runOptions={uniqueRunIds(gamesQuery.data ?? [])}
+            onRunIdChange={setLeaderboardRunId}
+            onColorChange={setLeaderboardColor}
+            onLegalityModeChange={setLeaderboardLegality}
+          />
+        )}
       </section>
     </main>
+  );
+}
+
+function RuntimePanel({
+  telemetry,
+  game,
+  currentMove,
+  activeJob,
+}: {
+  telemetry: RuntimeTelemetry | undefined;
+  game: GameDetail | undefined;
+  currentMove: Move | undefined;
+  activeJob: GameJob | undefined;
+}) {
+  const liveGameIsActive =
+    activeJob !== undefined && activeJob.game_id === game?.id && activeJob.status === "running";
+  const nextColor = (game?.moves.length ?? 0) % 2 === 0 ? "white" : "black";
+
+  return (
+    <section className="panel runtime-panel">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Live Telemetry</p>
+          <h3>Model Runtime</h3>
+        </div>
+        <span className="runtime-sample">{telemetry ? relativeSampleTime(telemetry.sampled_at) : "waiting"}</span>
+      </div>
+
+      <div className="model-runtime-grid">
+        <PlayerRuntimeCard
+          color="white"
+          name={game?.white_player ?? "White"}
+          game={game}
+          telemetry={telemetry}
+          currentMove={currentMove}
+          status={modelStatus("white", liveGameIsActive, nextColor, activeJob)}
+        />
+        <PlayerRuntimeCard
+          color="black"
+          name={game?.black_player ?? "Black"}
+          game={game}
+          telemetry={telemetry}
+          currentMove={currentMove}
+          status={modelStatus("black", liveGameIsActive, nextColor, activeJob)}
+        />
+      </div>
+
+      <div className="runtime-sections">
+        <div>
+          <h4>Global GPU / VRAM</h4>
+          {telemetry?.gpus.length ? (
+            <div className="resource-list">
+              {telemetry.gpus.map((gpu) => (
+                <ResourceMeter
+                  key={gpu.name}
+                  label={gpu.name}
+                  value={gpu.memory_used_mb}
+                  max={gpu.memory_total_mb}
+                  suffix="MB"
+                  detail={`${gpu.utilization_percent ?? "—"}% GPU`}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="muted compact">No NVIDIA telemetry available.</p>
+          )}
+        </div>
+
+        <div>
+          <h4>Runtime Residency</h4>
+          {telemetry?.ollama_models.length ? (
+            <div className="runtime-model-list">
+              {telemetry.ollama_models.map((model) => (
+                <div key={model.name} className="runtime-model-row">
+                  <strong>{model.name}</strong>
+                  <span>
+                    {bytesLabel(model.size_vram_bytes ?? model.size_bytes)}
+                    {model.processor ? ` · ${model.processor}` : ""}
+                    {model.context_window ? ` · ctx ${model.context_window}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted compact">No model is resident right now.</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PlayerRuntimeCard({
+  color,
+  name,
+  game,
+  telemetry,
+  currentMove,
+  status,
+}: {
+  color: "white" | "black";
+  name: string;
+  game: GameDetail | undefined;
+  telemetry: RuntimeTelemetry | undefined;
+  currentMove: Move | undefined;
+  status: string;
+}) {
+  const stats = useMemo(() => modelRuntimeStats(game, color), [game, color]);
+  const residentModel = telemetry?.ollama_models.find((model) => model.name === name);
+  const moveUsage =
+    currentMove?.color === color
+      ? currentMove.attempts.find((attempt) => attempt.legal_ok)?.token_usage ??
+        currentMove.attempts[0]?.token_usage ??
+        null
+      : stats.lastUsage;
+
+  return (
+    <div className={`model-runtime-card ${color}`}>
+      <div className="model-runtime-head">
+        <span className="color-swatch" />
+        <div>
+          <strong>{name}</strong>
+          <span>{color}</span>
+        </div>
+        <span className={`status-pill ${status}`}>{status}</span>
+      </div>
+
+      <div className="model-runtime-metrics">
+        <Metric label="Move Tokens" value={moveUsage?.total_tokens ?? "—"} />
+        <Metric label="Context Left" value={contextLabel(moveUsage)} />
+        <Metric label="Game Tokens" value={stats.totalTokens || "—"} />
+        <Metric
+          label="Avg Latency"
+          value={stats.averageLatencyMs === null ? "—" : `${stats.averageLatencyMs.toFixed(1)} ms`}
+        />
+      </div>
+
+      <dl className="model-runtime-facts">
+        <dt>Retries</dt>
+        <dd>{stats.retries}</dd>
+        <dt>Invalid attempts</dt>
+        <dd>{stats.invalidAttempts}</dd>
+        <dt>Residency</dt>
+        <dd>{residentModel ? "resident" : "not resident"}</dd>
+        <dt>VRAM</dt>
+        <dd>{residentModel ? bytesLabel(residentModel.size_vram_bytes ?? residentModel.size_bytes) : "—"}</dd>
+        <dt>Processor</dt>
+        <dd>{residentModel?.processor ?? "—"}</dd>
+      </dl>
+    </div>
+  );
+}
+
+function ResourceMeter({
+  label,
+  value,
+  max,
+  suffix,
+  detail,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  suffix: string;
+  detail: string;
+}) {
+  const percentage = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  return (
+    <div className="resource-meter">
+      <div>
+        <strong>{label}</strong>
+        <span>
+          {value} / {max} {suffix} · {detail}
+        </span>
+      </div>
+      <div className="meter-track" aria-hidden="true">
+        <span style={{ width: `${percentage}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -375,15 +605,17 @@ function EvalGraph({ game }: { game: GameDetail | undefined }) {
     if (!game) {
       return [];
     }
-    return game.moves.map((move) => {
-      const evaluation = move.engine_evaluations[0];
-      return {
-        ply: move.ply,
-        after: evaluation?.eval_after_cp ?? null,
-        cpl: evaluation?.centipawn_loss ?? null,
-        label: move.accepted_san,
-      };
-    });
+    return game.moves
+      .map((move) => {
+        const evaluation = move.engine_evaluations[0];
+        return {
+          ply: move.ply,
+          after: evaluation?.eval_after_cp ?? null,
+          cpl: evaluation?.centipawn_loss ?? null,
+          label: move.accepted_san,
+        };
+      })
+      .filter((row) => row.after !== null || row.cpl !== null);
   }, [game]);
 
   return (
@@ -392,8 +624,10 @@ function EvalGraph({ game }: { game: GameDetail | undefined }) {
         <p className="eyebrow">Engine Trace</p>
         <h3>Evaluation Graph</h3>
       </div>
-      {data.length === 0 ? (
-        <p className="muted">No moves to graph yet.</p>
+      {!game ? (
+        <p className="muted">No game selected.</p>
+      ) : data.length === 0 ? (
+        <p className="muted">No engine evaluations are stored for this game yet.</p>
       ) : (
         <div className="chart-wrap">
           <ResponsiveContainer width="100%" height={240}>
@@ -813,58 +1047,114 @@ function PlayerStrip({
   );
 }
 
-function MovePanel({
+function MoveListPanel({
   game,
   plyIndex,
-  currentMove,
   onSelectPly,
 }: {
   game: GameDetail | undefined;
   plyIndex: number;
-  currentMove: Move | undefined;
   onSelectPly: (ply: number) => void;
 }) {
   if (!game) {
-    return <section className="panel">Select a persisted game to inspect its move trace.</section>;
+    return <section className="panel">Select a game to inspect its moves.</section>;
   }
-  if (plyIndex === 0 || !currentMove) {
+
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <p className="eyebrow">Move List</p>
+        <h3>{plyIndex === 0 ? "Starting Position" : `Ply ${plyIndex}`}</h3>
+      </div>
+      <MoveTable moves={game.moves} activePly={plyIndex} onSelectPly={onSelectPly} />
+    </section>
+  );
+}
+
+function MoveDebugPanel({ currentMove }: { currentMove: Move | undefined }) {
+  if (!currentMove) {
     return (
-      <section className="panel">
-        <h3>Initial Position</h3>
-        <p className="muted">Starting position before the first model move.</p>
-        <MoveTable moves={game.moves} activePly={plyIndex} onSelectPly={onSelectPly} />
+      <section className="panel detail-panel">
+        <div className="section-heading">
+          <p className="eyebrow">Move Debug</p>
+          <h3>No move selected</h3>
+        </div>
+        <p className="muted">Move attempts appear after selecting a ply in the replay timeline.</p>
       </section>
     );
   }
 
-  const evaluation = currentMove.engine_evaluations[0];
   const acceptedAttempt = currentMove.attempts.find((attempt) => attempt.legal_ok);
   const tokenUsage = acceptedAttempt?.token_usage ?? currentMove.attempts[0]?.token_usage;
 
   return (
-    <section className="panel">
+    <section className="panel detail-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Ply {currentMove.ply}</p>
+          <p className="eyebrow">Move Debug</p>
           <h3>
-            {currentMove.color} · {currentMove.accepted_san}
+            Ply {currentMove.ply} · {currentMove.color} · {currentMove.accepted_san}
           </h3>
         </div>
-        <span className={`badge ${evaluation?.classification ?? "pending"}`}>
-          {evaluation?.classification ?? "no eval"}
-        </span>
       </div>
 
       <div className="metric-grid">
-        <Metric label="CPL" value={evaluation?.centipawn_loss ?? "—"} />
         <Metric label="Retries" value={currentMove.retries_used} />
+        <Metric label="Attempts" value={currentMove.attempts.length} />
         <Metric label="Latency" value={`${currentMove.latency_total_ms.toFixed(1)} ms`} />
         <Metric label="Tokens" value={tokenUsage?.total_tokens ?? "—"} />
       </div>
 
-      <div className="detail-grid">
-        <div>
-          <h4>Evaluation</h4>
+      <div className="attempt-list">
+        {currentMove.attempts.map((attempt) => (
+          <div key={attempt.id} className="attempt-row">
+            <span>#{attempt.attempt_number}</span>
+            <span>{attempt.parsed_move ?? "-"}</span>
+            <span>{attempt.legal_ok ? "legal" : attempt.error_type ?? "invalid"}</span>
+            <span>{attempt.latency_ms.toFixed(1)} ms</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AnalysisPanel({
+  game,
+  currentMove,
+}: {
+  game: GameDetail | undefined;
+  currentMove: Move | undefined;
+}) {
+  if (!game) {
+    return (
+      <section className="panel detail-panel">
+        <div className="section-heading">
+          <p className="eyebrow">Analysis</p>
+          <h3>No game selected</h3>
+        </div>
+      </section>
+    );
+  }
+
+  const evaluation = currentMove?.engine_evaluations[0];
+  const hasEvaluation = game.moves.some((move) => move.engine_evaluations.length > 0);
+
+  return (
+    <div className="detail-stack">
+      <section className="panel detail-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Stockfish</p>
+            <h3>{currentMove ? `Ply ${currentMove.ply} · ${currentMove.accepted_san}` : "No move selected"}</h3>
+          </div>
+          {currentMove && (
+            <span className={`badge ${evaluation?.classification ?? "pending"}`}>
+              {evaluation?.classification ?? "no eval"}
+            </span>
+          )}
+        </div>
+        {currentMove ? (
           <dl>
             <dt>Best move</dt>
             <dd>{evaluation?.best_move_uci ?? "—"}</dd>
@@ -875,35 +1165,68 @@ function MovePanel({
             <dt>Nodes</dt>
             <dd>{evaluation?.nodes ?? "—"}</dd>
           </dl>
-        </div>
-        <div>
-          <h4>Attempts</h4>
-          <div className="attempt-list">
-            {currentMove.attempts.map((attempt) => (
-              <div key={attempt.id} className="attempt-row">
-                <span>#{attempt.attempt_number}</span>
-                <span>{attempt.parsed_move ?? "-"}</span>
-                <span>{attempt.legal_ok ? "legal" : attempt.error_type ?? "invalid"}</span>
-                <span>{attempt.latency_ms.toFixed(1)} ms</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+        ) : (
+          <p className="muted">Select a move to inspect engine evaluation for that ply.</p>
+        )}
+        {!hasEvaluation && (
+          <p className="muted compact">No engine evaluations are stored for this game yet.</p>
+        )}
+      </section>
 
-      {currentMove.annotations.length > 0 && (
-        <div className="commentary-list">
+      {currentMove && currentMove.annotations.length > 0 && (
+        <section className="panel detail-panel">
           <h4>Commentary</h4>
           {currentMove.annotations.map((annotation) => (
             <p key={`${annotation.persona}-${annotation.created_at}`}>
               <strong>{annotation.persona}</strong>: {annotation.commentary}
             </p>
           ))}
-        </div>
+        </section>
       )}
 
-      <MoveTable moves={game.moves} activePly={plyIndex} onSelectPly={onSelectPly} />
-    </section>
+      <EvalGraph game={game} />
+    </div>
+  );
+}
+
+function BenchmarkPanel({
+  game,
+  leaderboardRows,
+  comparisonRows,
+  leaderboardRunId,
+  leaderboardColor,
+  leaderboardLegality,
+  runOptions,
+  onRunIdChange,
+  onColorChange,
+  onLegalityModeChange,
+}: {
+  game: GameDetail | undefined;
+  leaderboardRows: LeaderboardRow[];
+  comparisonRows: RunComparisonRow[];
+  leaderboardRunId: number | "all";
+  leaderboardColor: string;
+  leaderboardLegality: string;
+  runOptions: number[];
+  onRunIdChange: (value: number | "all") => void;
+  onColorChange: (value: string) => void;
+  onLegalityModeChange: (value: string) => void;
+}) {
+  return (
+    <div className="detail-stack">
+      <Leaderboard
+        rows={leaderboardRows}
+        runId={leaderboardRunId}
+        color={leaderboardColor}
+        legalityMode={leaderboardLegality}
+        runOptions={runOptions}
+        onRunIdChange={onRunIdChange}
+        onColorChange={onColorChange}
+        onLegalityModeChange={onLegalityModeChange}
+      />
+      <OperationalEventsPanel game={game} />
+      <RunComparison rows={comparisonRows} />
+    </div>
   );
 }
 
@@ -992,6 +1315,88 @@ function scoreLabel(cp: number | null | undefined, mate: number | null | undefin
     return `${cp} cp`;
   }
   return "—";
+}
+
+function modelRuntimeStats(game: GameDetail | undefined, color: "white" | "black") {
+  const moves = game?.moves.filter((move) => move.color === color) ?? [];
+  const attempts = moves.flatMap((move) => move.attempts);
+  const lastAttemptWithUsage = [...attempts]
+    .reverse()
+    .find((attempt) => attempt.token_usage !== null);
+  const latencyTotalMs = moves.reduce((total, move) => total + move.latency_total_ms, 0);
+
+  return attempts.reduce(
+    (stats, attempt) => {
+      const usage = attempt.token_usage;
+      return {
+        totalTokens: stats.totalTokens + (usage?.total_tokens ?? 0),
+        retries: stats.retries,
+        invalidAttempts: stats.invalidAttempts + (attempt.legal_ok ? 0 : 1),
+        lastUsage: lastAttemptWithUsage?.token_usage ?? null,
+        averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
+      };
+    },
+    {
+      totalTokens: 0,
+      retries: moves.reduce((total, move) => total + move.retries_used, 0),
+      invalidAttempts: 0,
+      lastUsage: lastAttemptWithUsage?.token_usage ?? null,
+      averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
+    },
+  );
+}
+
+function modelStatus(
+  color: "white" | "black",
+  liveGameIsActive: boolean,
+  nextColor: "white" | "black",
+  activeJob: GameJob | undefined,
+) {
+  if (liveGameIsActive) {
+    return color === nextColor ? "generating" : "waiting";
+  }
+  if (activeJob?.status === "failed") {
+    return "failed";
+  }
+  if (activeJob?.status === "completed") {
+    return "finished";
+  }
+  return "idle";
+}
+
+function contextLabel(
+  usage:
+    | {
+        estimated_context_remaining: number;
+        estimated_context_window: number;
+      }
+    | null
+    | undefined,
+) {
+  if (!usage) {
+    return "—";
+  }
+  return `${usage.estimated_context_remaining} / ${usage.estimated_context_window}`;
+}
+
+function bytesLabel(value: number | null | undefined) {
+  if (!value) {
+    return "size unknown";
+  }
+  const gib = value / 1024 ** 3;
+  if (gib >= 1) {
+    return `${gib.toFixed(1)} GB`;
+  }
+  return `${(value / 1024 ** 2).toFixed(0)} MB`;
+}
+
+function relativeSampleTime(sampledAt: string) {
+  const elapsedMs = Date.now() - new Date(sampledAt).getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return "live";
+  }
+  const seconds = Math.round(elapsedMs / 1000);
+  return seconds <= 1 ? "live" : `${seconds}s ago`;
 }
 
 function Leaderboard({
