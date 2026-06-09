@@ -262,6 +262,7 @@ class LeaderboardRow(BaseModel):
     draws: int
     losses: int
     unfinished: int
+    avg_game_plies: float
     avg_cpl: float | None
     blunders: int
     mistakes: int
@@ -291,6 +292,7 @@ class RunComparisonRow(BaseModel):
     draws: int
     losses: int
     unfinished: int
+    avg_game_plies: float
     avg_cpl: float | None
     illegal_rate: float
     malformed_rate: float
@@ -630,6 +632,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     draws=summary.draws,
                     losses=summary.losses,
                     unfinished=summary.unfinished,
+                    avg_game_plies=summary.avg_game_plies,
                     avg_cpl=summary.avg_cpl,
                     blunders=summary.blunders,
                     mistakes=summary.mistakes,
@@ -997,7 +1000,7 @@ async def _run_stockfish_match_job(
             game_ids = [*job.game_ids, game_id]
             jobs[job_id] = job.model_copy(
                 update={
-                    "game_id": game_ids[0],
+                    "game_id": game_id,
                     "game_ids": game_ids,
                     "games_completed": completed,
                 }
@@ -1071,7 +1074,7 @@ async def _run_stockfish_match_job(
             update={
                 "status": "completed",
                 "run_id": result.run_id,
-                "game_id": result.game_ids[0] if result.game_ids else None,
+                "game_id": result.game_ids[-1] if result.game_ids else None,
                 "game_ids": result.game_ids,
                 "games_completed": len(result.game_ids),
                 "result": "summary",
@@ -1336,6 +1339,9 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
         losses=losses,
         unfinished=unfinished,
         avg_cpl=_weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
+        avg_game_plies=_weighted_average(
+            [(row.avg_game_plies, row.games_played) for row in rows]
+        ),
         illegal_rate=_weighted_average([(row.illegal_rate, row.games_played) for row in rows]),
         malformed_rate=_weighted_average([(row.malformed_rate, row.games_played) for row in rows]),
         avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),

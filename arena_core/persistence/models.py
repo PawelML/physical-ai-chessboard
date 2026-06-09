@@ -271,6 +271,7 @@ class GameSummary(Base):
     draws: Mapped[int] = mapped_column(Integer, nullable=False)
     losses: Mapped[int] = mapped_column(Integer, nullable=False)
     unfinished: Mapped[int] = mapped_column(Integer, nullable=False)
+    avg_game_plies: Mapped[float] = mapped_column(Float, nullable=False)
     avg_cpl: Mapped[float | None] = mapped_column(Float)
     blunders: Mapped[int] = mapped_column(Integer, nullable=False)
     mistakes: Mapped[int] = mapped_column(Integer, nullable=False)

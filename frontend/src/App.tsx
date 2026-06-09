@@ -83,7 +83,12 @@ export default function App() {
   const [liveEvents, setLiveEvents] = useState(0);
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null);
   const [activeLiveJobId, setActiveLiveJobId] = useState<string | null>(null);
-  const effectiveGameId = selectedGameId ?? gamesQuery.data?.[0]?.id ?? null;
+  const activeLiveJob = gameJobsQuery.data?.find((job) => job.id === activeLiveJobId);
+  const activeJobGameId =
+    activeLiveJob?.status !== "failed" && activeLiveJob?.status !== "cancelled"
+      ? activeLiveJob?.game_id
+      : null;
+  const effectiveGameId = activeJobGameId ?? selectedGameId ?? gamesQuery.data?.[0]?.id ?? null;
 
   const gameQuery = useQuery({
     queryKey: ["game", effectiveGameId],
@@ -187,7 +192,6 @@ export default function App() {
   ]);
 
   const maxPly = game?.moves.length ?? 0;
-  const activeLiveJob = gameJobsQuery.data?.find((job) => job.id === activeLiveJobId);
   const followLiveGame =
     activeLiveJob?.game_id === effectiveGameId && activeLiveJob.status !== "failed";
   const replayPlyIndex = followLiveGame ? maxPly : Math.min(plyIndex, maxPly);
@@ -340,6 +344,9 @@ export default function App() {
         <div className="live-strip">
           <span className="live-dot" />
           <span>Live stream connected</span>
+          {activeLiveJob?.kind === "stockfish_match" && activeLiveJob.status === "running" && (
+            <span className="live-match-status">{stockfishLiveLabel(activeLiveJob)}</span>
+          )}
           <strong>{liveEvents}</strong>
         </div>
 
@@ -646,6 +653,7 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
             <span>Run</span>
             <span>Games</span>
             <span>W-D-L-U</span>
+            <span>Moves</span>
             <span>Avg CPL</span>
             <span>Illegal</span>
             <span>Retries</span>
@@ -659,6 +667,7 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
               <span>
                 {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
+              <span>{movesLabel(row.avg_game_plies)}</span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
               <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
               <span>{row.avg_retries.toFixed(2)}</span>
@@ -1219,7 +1228,7 @@ function ModelInput({
 function jobLabel(job: GameJob) {
   if (job.status === "running") {
     if (job.kind === "stockfish_match" && job.games_requested) {
-      return `${job.games_completed}/${job.games_requested} games`;
+      return stockfishLiveLabel(job);
     }
     return "running";
   }
@@ -1230,6 +1239,12 @@ function jobLabel(job: GameJob) {
     return job.run_id ? `Run ${job.run_id}` : "completed";
   }
   return job.game_id ? `Game ${job.game_id}` : "completed";
+}
+
+function stockfishLiveLabel(job: GameJob) {
+  const requested = job.games_requested ?? 1;
+  const current = Math.min(job.games_completed + 1, requested);
+  return `Game ${current}/${requested}`;
 }
 
 function stockfishJobOptions(job: GameJob) {
@@ -1898,6 +1913,7 @@ function Leaderboard({
             <span>Color</span>
             <span>W-D-L-U</span>
             <span>Score</span>
+            <span>Moves</span>
             <span>Avg CPL</span>
             <span>Illegal</span>
             <span>Retries</span>
@@ -1915,6 +1931,7 @@ function Leaderboard({
                 {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
               <span>{scorePercent(row)}</span>
+              <span>{movesLabel(row.avg_game_plies)}</span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
               <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
               <span>{row.avg_retries.toFixed(2)}</span>
@@ -1932,4 +1949,8 @@ function scorePercent(row: { games_played: number; wins: number; draws: number }
     return "—";
   }
   return `${(((row.wins + row.draws * 0.5) / row.games_played) * 100).toFixed(1)}%`;
+}
+
+function movesLabel(avgGamePlies: number) {
+  return (avgGamePlies / 2).toFixed(1);
 }

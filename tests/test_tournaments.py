@@ -347,6 +347,7 @@ async def test_rebuild_game_summaries_materializes_leaderboard_rows(tmp_path: Pa
     assert sum(summary.games_played for summary in summaries) == 8
     assert {summary.games_played for summary in summaries} == {2}
     assert {summary.unfinished for summary in summaries} == {2}
+    assert {summary.avg_game_plies for summary in summaries} == {1.0}
     assert all(summary.draws == 0 for summary in summaries)
     assert all(summary.legality_mode == "open" for summary in summaries)
     assert sum(summary.total_tokens for summary in summaries) > 0

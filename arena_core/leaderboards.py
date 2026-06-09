@@ -18,6 +18,7 @@ class _Bucket:
     draws: int = 0
     losses: int = 0
     unfinished: int = 0
+    game_plies: list[int] = field(default_factory=list)
     cpls: list[int] = field(default_factory=list)
     blunders: int = 0
     mistakes: int = 0
@@ -101,14 +102,12 @@ async def _accumulate_game(
     if game.termination_reason == "forfeit_invalid" and outcome == "loss":
         bucket.forfeit_invalid_count += 1
 
-    moves = (
-        await session.execute(
-            select(models.Move).where(
-                models.Move.game_id == game.id,
-                models.Move.color == bucket.color,
-            )
-        )
+    all_game_moves = (
+        await session.execute(select(models.Move).where(models.Move.game_id == game.id))
     ).scalars().all()
+    bucket.game_plies.append(len(all_game_moves))
+
+    moves = [move for move in all_game_moves if move.color == bucket.color]
     move_ids = [move.id for move in moves]
     bucket.retries.extend(move.retries_used for move in moves)
     bucket.latencies.extend(move.latency_total_ms for move in moves)
@@ -161,6 +160,7 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
         draws=bucket.draws,
         losses=bucket.losses,
         unfinished=bucket.unfinished,
+        avg_game_plies=_avg(bucket.game_plies) or 0.0,
         avg_cpl=_avg(bucket.cpls),
         blunders=bucket.blunders,
         mistakes=bucket.mistakes,

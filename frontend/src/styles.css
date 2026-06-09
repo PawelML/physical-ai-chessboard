@@ -111,6 +111,13 @@ h4 {
   color: #17201c;
 }
 
+.live-match-status {
+  padding-left: 8px;
+  border-left: 1px solid #d8d2c5;
+  color: #17201c;
+  font-weight: 800;
+}
+
 .live-dot {
   width: 8px;
   height: 8px;
@@ -552,9 +559,9 @@ h4 {
 .comparison-head,
 .comparison-row {
   display: grid;
-  grid-template-columns: 60px 70px 90px 90px 90px 90px 110px 90px;
+  grid-template-columns: 60px 70px 90px 80px 90px 90px 90px 110px 90px;
   gap: 10px;
-  min-width: 760px;
+  min-width: 850px;
   align-items: center;
 }
 
@@ -624,9 +631,9 @@ h4 {
 .leaderboard-head,
 .leaderboard-row {
   display: grid;
-  grid-template-columns: 54px minmax(120px, 1.2fr) 130px 80px 80px 80px 90px 80px 80px 90px;
+  grid-template-columns: 54px minmax(120px, 1.2fr) 130px 80px 80px 80px 80px 90px 80px 80px 90px;
   gap: 10px;
-  min-width: 930px;
+  min-width: 1010px;
   align-items: center;
 }
 
