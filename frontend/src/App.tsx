@@ -31,6 +31,7 @@ import {
   startGame,
   type GameDetail,
   type GameJob,
+  type GuidanceMode,
   type LeaderboardRow,
   type ModelOption,
   type Move,
@@ -760,6 +761,7 @@ function StartGamePanel({
   const [black, setBlack] = useState<string | null>(null);
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
   const [ollamaPreset, setOllamaPreset] = useState<OllamaPreset>("strict");
+  const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>("legal_list");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
@@ -781,6 +783,7 @@ function StartGamePanel({
             black: selectedBlack,
             legality_mode: legalityMode,
             ollama_preset: ollamaPreset,
+            guidance_mode: guidanceMode,
             max_plies: maxPlies ? Number(maxPlies) : null,
           });
         }}
@@ -793,6 +796,17 @@ function StartGamePanel({
             disabled={submitting}
             onChange={setWhite}
           />
+        </label>
+        <label>
+          <span>Guidance</span>
+          <select
+            value={guidanceMode}
+            disabled={submitting}
+            onChange={(event) => setGuidanceMode(event.target.value as GuidanceMode)}
+          >
+            <option value="legal_list">Legal move list</option>
+            <option value="strategic_memory">Strategic memory</option>
+          </select>
         </label>
         <label>
           <span>Ollama preset</span>
@@ -850,7 +864,7 @@ function StartGamePanel({
               <span>
                 {job.white} vs {job.black}
               </span>
-              <strong>{job.ollama_preset} · {jobLabel(job)}</strong>
+              <strong>{job.guidance_mode} · {job.ollama_preset} · {jobLabel(job)}</strong>
             </div>
           ))}
         </div>

@@ -176,6 +176,7 @@ async def _play_async(
     legality_mode: str,
     max_plies: int | None,
     stockfish_path: str | None,
+    strategic_memory: bool = False,
     commit_after_each_ply: bool = False,
     on_game_started: Callable[[int], Awaitable[None] | None] | None = None,
 ) -> tuple[GameResult, list[str]]:
@@ -204,6 +205,7 @@ async def _play_async(
                     legality_mode=cast("LegalityMode", legality_mode),
                     max_plies=max_plies,
                     evaluator=evaluator,
+                    strategic_memory=strategic_memory,
                 )
                 result = await game.run(
                     session,
@@ -219,6 +221,7 @@ async def _play_async(
                         legality_mode=cast("LegalityMode", legality_mode),
                         max_plies=max_plies,
                         evaluator=evaluator,
+                        strategic_memory=strategic_memory,
                     )
                     result = await game.run(session)
 

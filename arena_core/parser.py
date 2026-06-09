@@ -1,6 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,8 @@ class ParsedMove:
     parse_ok: bool
     error_type: str | None
     reason: str | None
+    rationale: str | None = None
+    strategy_update: dict[str, Any] | None = None
 
 
 def parse_uci_json(raw_response: str) -> ParsedMove:
@@ -28,7 +31,16 @@ def parse_uci_json(raw_response: str) -> ParsedMove:
     move = payload.get("move")
     if not isinstance(move, str) or not move.strip():
         return ParsedMove(None, False, "malformed_json", "Response must contain a non-empty move")
-    return ParsedMove(move.strip(), True, None, None)
+    rationale = payload.get("rationale")
+    strategy_update = payload.get("strategy_update")
+    return ParsedMove(
+        move.strip(),
+        True,
+        None,
+        None,
+        rationale.strip() if isinstance(rationale, str) else None,
+        strategy_update if isinstance(strategy_update, dict) else None,
+    )
 
 
 def _strip_code_fence(value: str) -> str:

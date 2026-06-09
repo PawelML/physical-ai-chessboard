@@ -155,6 +155,7 @@ export type GameJob = {
   black: string;
   legality_mode: string;
   ollama_preset: OllamaPreset;
+  guidance_mode: GuidanceMode;
   max_plies: number | null;
   game_id: number | null;
   result: string | null;
@@ -165,12 +166,14 @@ export type GameJob = {
 };
 
 export type OllamaPreset = "strict" | "low_creativity" | "thinking_if_supported";
+export type GuidanceMode = "legal_list" | "strategic_memory";
 
 export type StartGamePayload = {
   white: string;
   black: string;
   legality_mode: "open" | "constrained";
   ollama_preset: OllamaPreset;
+  guidance_mode: GuidanceMode;
   max_plies: number | null;
 };
 

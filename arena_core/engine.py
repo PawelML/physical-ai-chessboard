@@ -116,6 +116,7 @@ class ArenaGame:
         white_participant_id: int | None = None,
         black_participant_id: int | None = None,
         opening_line_id: int | None = None,
+        strategic_memory: bool = False,
     ) -> None:
         self.white = white
         self.black = black
@@ -128,10 +129,15 @@ class ArenaGame:
         self.white_participant_id = white_participant_id
         self.black_participant_id = black_participant_id
         self.opening_line_id = opening_line_id
+        self.strategic_memory = strategic_memory
         self._initial_fen = self.board.fen()
         self._initial_ply = self.board.ply()
         self._san_history: list[str] = []
         self._uci_history: list[str] = []
+        self._strategic_memory: dict[chess.Color, dict[str, str]] = {
+            chess.WHITE: _initial_strategy_memory("white"),
+            chess.BLACK: _initial_strategy_memory("black"),
+        }
 
     async def run(
         self,
@@ -221,6 +227,12 @@ class ArenaGame:
                 last_opponent_move=self._last_opponent_move_for_side(self.board.turn),
                 legality_mode=self.legality_mode,
                 feedback=feedback,
+                strategic_memory=(
+                    self._strategic_memory[self.board.turn] if self.strategic_memory else None
+                ),
+                repetition_warning=(
+                    self._repetition_warning() if self.strategic_memory else None
+                ),
                 version=self.settings.prompt_version,
             )
             prompt_row = await ensure_prompt(session, prompt)
@@ -254,6 +266,7 @@ class ArenaGame:
                     game_id=game_id,
                     move=chess_move,
                     move_source=move_source,
+                    parsed=parsed,
                     retries_used=attempt_number - 1,
                     latency_total_ms=latency_total_ms,
                     attempts=attempt_rows,
@@ -330,6 +343,7 @@ class ArenaGame:
         game_id: int,
         move: chess.Move,
         move_source: MoveSource,
+        parsed: ParsedMove,
         retries_used: int,
         latency_total_ms: float,
         attempts: list[models.Attempt],
@@ -378,6 +392,8 @@ class ArenaGame:
                 attempt.move_id = move_row.id
         self._san_history.append(san)
         self._uci_history.append(move.uci())
+        if self.strategic_memory:
+            self._update_strategic_memory(color, san, move.uci(), parsed)
 
     def _own_moves_for_side(self, side: chess.Color) -> list[tuple[str, str]]:
         start = 0 if side == chess.WHITE else 1
@@ -392,6 +408,29 @@ class ArenaGame:
         if side == chess.BLACK and last_was_white:
             return f"{self._san_history[-1]}/{self._uci_history[-1]}"
         return None
+
+    def _repetition_warning(self) -> str | None:
+        if self.board.can_claim_threefold_repetition():
+            return (
+                "A draw can be claimed by repetition. Avoid repeating unless a draw is your plan."
+            )
+        if self.board.is_repetition(2):
+            return "The current position has repeated. Choose a move that improves the plan."
+        return None
+
+    def _update_strategic_memory(self, color: str, san: str, uci: str, parsed: ParsedMove) -> None:
+        side = chess.WHITE if color == "white" else chess.BLACK
+        memory = self._strategic_memory[side].copy()
+        update = parsed.strategy_update or {}
+        for key in ("objective", "opponent_threats", "pieces_to_improve", "avoid"):
+            value = update.get(key)
+            if isinstance(value, str) and value.strip():
+                memory[key] = _compact_strategy_text(value)
+        if parsed.rationale:
+            memory["last_rationale"] = _compact_strategy_text(f"{san}/{uci}: {parsed.rationale}")
+        else:
+            memory["last_rationale"] = f"{san}/{uci}: no rationale returned"
+        self._strategic_memory[side] = memory
 
     def _termination_reason(self) -> str:
         if self.board.is_checkmate():
@@ -428,3 +467,28 @@ def _close_if_present(source: object) -> None:
     close = getattr(source, "close", None)
     if callable(close):
         close()
+
+
+def _initial_strategy_memory(side: str) -> dict[str, str]:
+    return {
+        "objective": (
+            f"Play active legal chess as {side}; develop pieces, keep the king safe, "
+            "and improve the position."
+        ),
+        "opponent_threats": "Identify direct checks, captures, and attacks before choosing a move.",
+        "pieces_to_improve": (
+            "Develop undeveloped minor pieces and coordinate queen, rooks, and king safety."
+        ),
+        "avoid": (
+            "Avoid moving the same piece repeatedly, exposing the king, "
+            "or repeating positions without purpose."
+        ),
+        "last_rationale": "(none)",
+    }
+
+
+def _compact_strategy_text(value: str, *, limit: int = 220) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "..."

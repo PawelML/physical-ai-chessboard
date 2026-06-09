@@ -33,6 +33,7 @@ from arena_core.reports import export_game_report
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed"]
 OllamaPreset = Literal["strict", "low_creativity", "thinking_if_supported"]
+GuidanceMode = Literal["legal_list", "strategic_memory"]
 
 
 class GameJob(BaseModel):
@@ -42,6 +43,7 @@ class GameJob(BaseModel):
     black: str
     legality_mode: str
     ollama_preset: OllamaPreset
+    guidance_mode: GuidanceMode
     max_plies: int | None
     game_id: int | None = None
     result: str | None = None
@@ -62,6 +64,7 @@ class StartGameRequest(BaseModel):
     black: str
     legality_mode: Literal["open", "constrained"] = "constrained"
     ollama_preset: OllamaPreset = "strict"
+    guidance_mode: GuidanceMode = "legal_list"
     max_plies: int | None = None
     stockfish_path: str | None = None
 
@@ -290,6 +293,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             black=black,
             legality_mode=payload.legality_mode,
             ollama_preset=payload.ollama_preset,
+            guidance_mode=payload.guidance_mode,
             max_plies=payload.max_plies,
             created_at=_utcnow_iso(),
         )
@@ -303,6 +307,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 black=black,
                 legality_mode=payload.legality_mode,
                 ollama_preset=payload.ollama_preset,
+                guidance_mode=payload.guidance_mode,
                 max_plies=payload.max_plies,
                 stockfish_path=payload.stockfish_path,
             )
@@ -669,6 +674,7 @@ async def _run_game_job(
     black: str,
     legality_mode: str,
     ollama_preset: OllamaPreset,
+    guidance_mode: GuidanceMode,
     max_plies: int | None,
     stockfish_path: str | None,
 ) -> None:
@@ -684,6 +690,7 @@ async def _run_game_job(
             legality_mode=legality_mode,
             max_plies=max_plies,
             stockfish_path=stockfish_path,
+            strategic_memory=guidance_mode == "strategic_memory",
             commit_after_each_ply=True,
             on_game_started=mark_game_started,
         )
