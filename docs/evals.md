@@ -77,7 +77,7 @@ sampler config · prompt version · quantization · context window.
 # Eval Report — run 2026-06-xx
 
 Mode: open · Opponent: model-vs-model · Suite: starter-v1 (both colors)
-Stockfish: 17 (1 thread, 200k nodes) · Prompt: strict-v1 · temperature=0
+Stockfish: 17 (1 thread, 200k nodes) · Prompt: strict-v6 · temperature=0
 
 | Model snapshot        | Games | Illegal % | Avg retries | Avg CPL | Blunders | W-D-L  |
 | --------------------- | ----: | --------: | ----------: | ------: | -------: | -----: |

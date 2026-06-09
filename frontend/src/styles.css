@@ -308,6 +308,50 @@ h4 {
   opacity: 0.55;
 }
 
+.sampling-panel {
+  border: 1px solid #d8d2c5;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.sampling-panel summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #27332e;
+}
+
+.sampling-panel label {
+  margin-top: 10px;
+}
+
+.sampling-panel small {
+  font-weight: 500;
+  text-transform: none;
+  color: #8a948f;
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.secondary-button {
+  margin-top: 12px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #1e6b58;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1e6b58;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .compact {
   margin: 10px 0 0;
   font-size: 0.86rem;
@@ -803,11 +847,71 @@ h4 {
 }
 
 .model-runtime-card.white {
-  border-left: 4px solid #d8d2c5;
+  border-left: 4px solid #c9a227;
+  background: linear-gradient(180deg, #fffdf6, #ffffff 42%);
 }
 
 .model-runtime-card.black {
   border-left: 4px solid #17201c;
+  background: linear-gradient(180deg, #f3f4f2, #ffffff 42%);
+}
+
+/* Winner / draw outcome highlighting */
+.model-runtime-card.outcome-winner {
+  border-color: #e6b800;
+  box-shadow: 0 0 0 1px #e6b800;
+  animation: winner-glow 1.9s ease-in-out infinite;
+}
+
+.model-runtime-card.outcome-loser {
+  opacity: 0.62;
+  filter: saturate(0.8);
+}
+
+@keyframes winner-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px #e6b800, 0 0 12px rgba(230, 184, 0, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 1px #e6b800, 0 0 24px rgba(230, 184, 0, 0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-runtime-card.outcome-winner {
+    animation: none;
+    box-shadow: 0 0 0 1px #e6b800, 0 0 16px rgba(230, 184, 0, 0.6);
+  }
+}
+
+.outcome-ribbon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.outcome-ribbon.winner {
+  background: linear-gradient(135deg, #ffe082, #e6b800);
+  color: #4d3b00;
+  box-shadow: 0 2px 9px rgba(230, 184, 0, 0.5);
+}
+
+.outcome-ribbon.draw {
+  background: #e9ece7;
+  color: #475149;
+}
+
+.outcome-ribbon span {
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .model-runtime-head {
@@ -817,19 +921,54 @@ h4 {
   align-items: center;
 }
 
-.model-runtime-head strong,
-.model-runtime-head span {
+.model-runtime-head strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-runtime-head div span {
-  color: #68756f;
-  font-size: 0.74rem;
-  font-weight: 800;
+.piece-badge {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #27332e;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.model-runtime-card.white .piece-badge {
+  background: #fffdf7;
+  color: #17201c;
+  border-color: #c9a227;
+}
+
+.model-runtime-card.black .piece-badge {
+  background: #17201c;
+  color: #fffdf7;
+}
+
+.color-label {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.model-runtime-card.white .color-label {
+  background: #f6edcf;
+  color: #6b5500;
+}
+
+.model-runtime-card.black .color-label {
+  background: #1f2a25;
+  color: #e9ece7;
 }
 
 .status-pill {
@@ -855,6 +994,16 @@ h4 {
 .status-pill.failed {
   background: #f7dddd;
   color: #8b2323;
+}
+
+.status-pill.finished {
+  background: #e4ecff;
+  color: #2f4b8c;
+}
+
+.status-pill.idle {
+  background: #eceee9;
+  color: #68756f;
 }
 
 .model-runtime-metrics {

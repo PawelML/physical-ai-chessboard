@@ -19,6 +19,7 @@ opening_suites ──< opening_lines                          │
                                                           └ (moves) ──< engine_evaluations
 game_summaries  (materialized aggregates for the leaderboard)
 provider_errors (optional)
+app_settings    (standalone key-value store for UI preferences)
 ```
 
 ## Tables
@@ -71,9 +72,11 @@ One row per **accepted** move (ply).
 ### `attempts`  ← one row per LLM call (including failures)
 - `id`, `move_id` (fk, nullable until a move is accepted), `game_id` (fk),
   `ply`, `attempt_number`, `prompt_id` (fk), `raw_prompt_hash`, `raw_prompt`
-  (text, retention-configurable), `raw_response`, `parsed_move`, `parse_ok`,
-  `legal_ok`, `error_type` (`malformed_json`/`illegal_move`/`null`),
-  `feedback_given` (json), `latency_ms`.
+  (text, retention-configurable), `raw_response`, `parsed_move` (raw UCI the
+  model emitted), `parse_ok`, `legal_ok`, `error_type`
+  (`malformed_json`/`illegal_move`/`null`), `feedback_given` (json), `latency_ms`,
+  `thinking` (model reasoning trace, nullable), `thinking_used` (bool — whether
+  Ollama actually ran thinking; see move-loop doc for the silent-disable gotcha).
 
 ### `token_usage`  (1:1 with attempt)
 - `attempt_id` (fk), `prompt_tokens`, `completion_tokens`, `total_tokens`,
@@ -95,6 +98,14 @@ Powers the leaderboard cheaply.
 
 ### `provider_errors` (optional)
 - `id`, `run_id`, `attempt_id`, `provider`, `error_kind`, `message`, `created_at`.
+
+### `app_settings`  (UI-managed preferences)
+Key-value store (`key` PK, `value` json) for preferences the UI saves, not tied to
+any run. Currently holds key `game_defaults` → default sampling/runtime knobs
+(`temperature`, `top_p`, `num_ctx`, `num_predict`) used to pre-fill the Start Game
+panel. Served by `GET`/`PUT /settings/game-defaults`. This replaced the old fixed
+`strict`/`low_creativity` sampling presets with per-knob control. Added in Alembic
+revision `0004`.
 
 ## Leaderboard query dimensions
 

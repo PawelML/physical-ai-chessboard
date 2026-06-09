@@ -23,7 +23,8 @@ arena-core   (pure Python, no web, no FastAPI imports)
    └── config        Pydantic Settings
 
 backend      (thin FastAPI)
-   ├── api           create/list runs, fetch games+moves+evals, leaderboard queries
+   ├── api           create/list runs, fetch games+moves+evals, leaderboard queries,
+   │                 game-job runner, GET/PUT /settings/game-defaults (sampling knobs)
    ├── stream        SSE of live game progress (Phase 6; polling before that)
    └── db            session wiring, migrations entrypoint
 
@@ -51,10 +52,16 @@ frontend     (React 19 + Vite + TanStack Query + shadcn/ui)
   `GeminiLLMService`, `OpenAILLMService`. v1 uses local only; others are flag-gated.
 - Each adapter reports usage (prompt/completion tokens when available) and latency
   back to `telemetry`.
+- Ollama adapter captures the model thinking trace and whether thinking actually ran
+  (silently disabled for unsupported builds — see move-loop doc). A cold load of a
+  large model can exceed 100s, so `ollama_timeout_seconds` defaults to 600 and a
+  timeout surfaces a clear `OllamaServiceError` rather than an empty failure.
 
 ### prompts
 - Versioned templates. A `prompt_version` is stored on every attempt so results are
   reproducible. Four template families: `{strict, reasoning} × {open, constrained}`.
+- The strict prompt states the win objective and asks for a move in **UCI**
+  (`{"move":"e2e4"}`); the engine accepts only UCI. Current version `strict-v7`.
 - See [`move-loop-and-prompts.md`](move-loop-and-prompts.md).
 
 ### evaluators

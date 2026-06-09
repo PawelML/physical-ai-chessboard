@@ -9,7 +9,12 @@ from arena_core.leaderboards import rebuild_game_summaries
 from arena_core.llm.base import LLMResponse, LLMService
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.tournaments import TournamentConfig, run_tournament
-from backend.main import _game_stream_payload, _settings_for_ollama_options, create_app
+from backend.main import (
+    GameDefaults,
+    _game_stream_payload,
+    _settings_for_ollama_options,
+    create_app,
+)
 
 
 class StubLLMService(LLMService):
@@ -123,7 +128,7 @@ async def test_backend_builds_game_stream_snapshots(tmp_path: Path) -> None:
 def test_cpu_offload_uses_configured_mixed_ollama_setting() -> None:
     settings = _settings_for_ollama_options(
         Settings(ollama_cpu_offload_gpu_layers=18),
-        preset="strict",
+        sampling=GameDefaults(),
         thinking=False,
         cpu_offload=True,
     )
@@ -131,3 +136,18 @@ def test_cpu_offload_uses_configured_mixed_ollama_setting() -> None:
     assert settings.ollama_num_gpu == 18
     assert settings.ollama_num_ctx == 8192
     assert settings.ollama_num_predict == 256
+
+
+def test_game_defaults_sampling_flows_into_settings() -> None:
+    settings = _settings_for_ollama_options(
+        Settings(),
+        sampling=GameDefaults(temperature=0.7, top_p=0.9, num_ctx=16384, num_predict=200),
+        thinking=False,
+        cpu_offload=False,
+    )
+
+    assert settings.ollama_temperature == 0.7
+    assert settings.ollama_top_p == 0.9
+    assert settings.ollama_num_ctx == 16384
+    assert settings.ollama_num_predict == 200
+    assert settings.ollama_num_gpu is None

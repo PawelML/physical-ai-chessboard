@@ -126,12 +126,11 @@ async def test_invalid_attempts_are_persisted_and_retried(tmp_path: Path) -> Non
 
 
 @pytest.mark.integration
-async def test_san_and_uci_moves_are_both_accepted(tmp_path: Path) -> None:
+async def test_only_uci_moves_are_accepted(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
     await init_db(db_url)
     session_factory = create_session_factory(db_url)
-    # White answers in SAN, Black answers in raw UCI: both must be coerced and accepted.
-    white = StaticMoveSource(['{"move":"e4"}', '{"move":"Nf3"}'])
+    white = StaticMoveSource(['{"move":"e4"}', '{"move":"e2e4"}'])
     black = StaticMoveSource(['{"move":"e7e5"}'])
 
     async with session_factory() as session:
@@ -139,23 +138,27 @@ async def test_san_and_uci_moves_are_both_accepted(tmp_path: Path) -> None:
             result = await ArenaGame(
                 white=white,
                 black=black,
-                settings=Settings(max_retries=3),
-                max_plies=3,
+                settings=Settings(max_retries=1),
+                max_plies=2,
             ).run(session)
 
     async with session_factory() as session:
         moves = (
             await session.execute(select(Move).order_by(Move.ply))
         ).scalars().all()
+        attempts = (
+            await session.execute(select(Attempt).order_by(Attempt.ply, Attempt.attempt_number))
+        ).scalars().all()
 
-    assert result.plies == 3
-    # SAN inputs (e4, Nf3) and the UCI input (e7e5) all normalize to the same move rows.
+    assert result.plies == 2
     assert [(m.accepted_san, m.accepted_uci) for m in moves] == [
         ("e4", "e2e4"),
         ("e5", "e7e5"),
-        ("Nf3", "g1f3"),
     ]
-    assert all(m.retries_used == 0 for m in moves)
+    assert [attempt.legal_ok for attempt in attempts] == [False, True, True]
+    assert attempts[0].parsed_move == "e4"
+    assert attempts[0].error_type == "illegal_move"
+    assert moves[0].retries_used == 1
 
 
 @pytest.mark.integration

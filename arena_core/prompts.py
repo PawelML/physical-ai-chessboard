@@ -7,7 +7,7 @@ import chess
 PromptMode = Literal["strict", "reasoning"]
 LegalityMode = Literal["open", "constrained"]
 
-STRICT_TEMPLATE_VERSION = "strict-v6"
+STRICT_TEMPLATE_VERSION = "strict-v7"
 
 
 @dataclass(frozen=True)
@@ -54,14 +54,14 @@ def build_strict_prompt(
         ),
         (
             "Return only strict JSON in this exact shape: "
-            "{\"move\":\"e4\",\"rationale\":\"short reason\","
+            "{\"move\":\"e2e4\",\"rationale\":\"short reason\","
             "\"strategy_update\":{\"objective\":\"short updated plan\"}}."
             if strategic_memory is not None
-            else "Return only strict JSON in this exact shape: {\"move\":\"e4\"}."
+            else "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}."
         ),
         (
-            "The move value must be standard algebraic notation (SAN), "
-            "e.g. e4, Nf3, O-O, exd5, e8=Q. Do not include move numbers or annotations."
+            "The move value must be UCI coordinate notation, e.g. e2e4, g1f3, "
+            "e1g1, e7e8q. Do not use SAN moves like e4, Nf3, O-O, or Qxc4."
         ),
         f"Side to move: {side}.",
         f"Current FEN: {board.fen()}",
@@ -91,13 +91,13 @@ def build_strict_prompt(
     if repetition_warning is not None:
         parts.append(f"Repetition warning: {repetition_warning}")
     if legality_mode == "constrained" or feedback is not None:
-        legal_moves = sorted(board.san(move) for move in board.legal_moves)
+        legal_moves = sorted(move.uci() for move in board.legal_moves)
         parts.extend(
             [
                 "Choose exactly one move from this legal move list.",
-                "Your move must exactly match one listed SAN move.",
+                "Your move must exactly match one listed UCI move.",
                 "If strategic memory conflicts with the legal move list, ignore the memory.",
-                "Legal moves (SAN): " + ", ".join(legal_moves),
+                "Legal moves (UCI): " + ", ".join(legal_moves),
             ]
         )
     if feedback is not None:

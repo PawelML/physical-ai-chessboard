@@ -28,14 +28,16 @@ import {
   fetchRunComparison,
   fetchRunEvents,
   fetchRuntimeTelemetry,
+  fetchGameDefaults,
+  saveGameDefaults,
   startGame,
+  type GameDefaults,
   type GameDetail,
   type GameJob,
   type GuidanceMode,
   type LeaderboardRow,
   type ModelOption,
   type Move,
-  type OllamaPreset,
   type RuntimeTelemetry,
   type RunComparisonRow,
   type StartGamePayload,
@@ -396,6 +398,7 @@ function RuntimePanel({
   const liveGameIsActive =
     activeJob !== undefined && activeJob.game_id === game?.id && activeJob.status === "running";
   const nextColor = (game?.moves.length ?? 0) % 2 === 0 ? "white" : "black";
+  const outcome = liveGameIsActive ? null : gameOutcome(game);
 
   return (
     <section className="panel runtime-panel">
@@ -420,6 +423,7 @@ function RuntimePanel({
           telemetry={telemetry}
           currentMove={currentMove}
           status={modelStatus("white", liveGameIsActive, nextColor, activeJob)}
+          outcome={cardOutcome("white", outcome)}
         />
         <PlayerRuntimeCard
           color="black"
@@ -428,6 +432,7 @@ function RuntimePanel({
           telemetry={telemetry}
           currentMove={currentMove}
           status={modelStatus("black", liveGameIsActive, nextColor, activeJob)}
+          outcome={cardOutcome("black", outcome)}
         />
       </div>
 
@@ -488,6 +493,7 @@ function PlayerRuntimeCard({
   telemetry,
   currentMove,
   status,
+  outcome,
 }: {
   color: "white" | "black";
   name: string;
@@ -495,6 +501,7 @@ function PlayerRuntimeCard({
   telemetry: RuntimeTelemetry | undefined;
   currentMove: Move | undefined;
   status: string;
+  outcome: "winner" | "loser" | "draw" | null;
 }) {
   const stats = useMemo(() => modelRuntimeStats(game, color), [game, color]);
   const residentModel = telemetry?.ollama_models.find((model) => model.name === name);
@@ -506,12 +513,24 @@ function PlayerRuntimeCard({
       : stats.lastUsage;
 
   return (
-    <div className={`model-runtime-card ${color}`}>
+    <div className={`model-runtime-card ${color}${outcome ? ` outcome-${outcome}` : ""}`}>
+      {outcome === "winner" && (
+        <div className="outcome-ribbon winner">
+          <span aria-hidden>👑</span> Winner
+        </div>
+      )}
+      {outcome === "draw" && (
+        <div className="outcome-ribbon draw">
+          <span aria-hidden>½</span> Draw
+        </div>
+      )}
       <div className="model-runtime-head">
-        <span className="color-swatch" />
+        <span className="piece-badge" aria-hidden>
+          {color === "white" ? "♔" : "♚"}
+        </span>
         <div>
           <strong>{name}</strong>
-          <span>{color} model</span>
+          <span className="color-label">{color}</span>
         </div>
         <span className={`status-pill ${status}`}>{status}</span>
       </div>
@@ -772,13 +791,51 @@ function StartGamePanel({
   const [white, setWhite] = useState<string | null>(null);
   const [black, setBlack] = useState<string | null>(null);
   const [legalityMode, setLegalityMode] = useState<"open" | "constrained">("constrained");
-  const [ollamaPreset, setOllamaPreset] = useState<OllamaPreset>("strict");
+  // null = untouched -> fall back to the server-saved default for display.
+  const [temperature, setTemperature] = useState<string | null>(null);
+  const [topP, setTopP] = useState<string | null>(null);
+  const [numCtx, setNumCtx] = useState<string | null>(null);
+  const [numPredict, setNumPredict] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState(false);
   const [ollamaThinking, setOllamaThinking] = useState(false);
   const [ollamaCpuOffload, setOllamaCpuOffload] = useState(false);
   const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>("legal_list");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
+
+  const defaultsQuery = useQuery({ queryKey: ["game-defaults"], queryFn: fetchGameDefaults });
+  const savedDefaults = defaultsQuery.data;
+  const numText = (value: number | null | undefined): string =>
+    value === null || value === undefined ? "" : String(value);
+  // Edited value wins; otherwise show the server-saved default.
+  const temperatureValue = temperature ?? (savedDefaults ? String(savedDefaults.temperature) : "0");
+  const topPValue = topP ?? numText(savedDefaults?.top_p);
+  const numCtxValue = numCtx ?? numText(savedDefaults?.num_ctx);
+  const numPredictValue = numPredict ?? numText(savedDefaults?.num_predict);
+
+  const numOrNull = (value: string): number | null => {
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return null;
+    }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const samplingPayload = (): GameDefaults => ({
+    temperature: numOrNull(temperatureValue) ?? 0,
+    top_p: numOrNull(topPValue),
+    num_ctx: numOrNull(numCtxValue),
+    num_predict: numOrNull(numPredictValue),
+  });
+
+  const saveDefaultsMutation = useMutation({
+    mutationFn: (payload: GameDefaults) => saveGameDefaults(payload),
+    onSuccess: () => {
+      setSavedNotice(true);
+      window.setTimeout(() => setSavedNotice(false), 2000);
+    },
+  });
 
   const recentJobs = jobs.slice(0, 4);
 
@@ -790,13 +847,14 @@ function StartGamePanel({
       </div>
       <form
         className="start-game-form"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
             white: selectedWhite,
             black: selectedBlack,
             legality_mode: legalityMode,
-            ollama_preset: ollamaPreset,
+            ...samplingPayload(),
             ollama_thinking: ollamaThinking,
             ollama_cpu_offload: ollamaCpuOffload,
             guidance_mode: guidanceMode,
@@ -839,17 +897,91 @@ function StartGamePanel({
               <option value="strategic_memory">Strategic memory</option>
             </select>
           </label>
-          <label>
-            <span>Sampling preset for both</span>
-            <select
-              value={ollamaPreset}
-              disabled={submitting}
-              onChange={(event) => setOllamaPreset(event.target.value as OllamaPreset)}
+          <details className="sampling-panel">
+            <summary>Sampling &amp; runtime parameters</summary>
+            <p className="muted compact">
+              Applied to both Ollama models. Leave a field blank to use the model&apos;s
+              own default. Thinking / mixed-offload below may still raise num_ctx and
+              num_predict when enabled.
+            </p>
+            <label>
+              <span>temperature</span>
+              <input
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                value={temperatureValue}
+                disabled={submitting}
+                onChange={(event) => setTemperature(event.target.value)}
+              />
+              <small className="muted">
+                Randomness of move choice. 0 = deterministic (same game every run);
+                0.3–0.7 = more varied, livelier play; higher = riskier.
+              </small>
+            </label>
+            <label>
+              <span>top_p</span>
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={topPValue}
+                placeholder="model default"
+                disabled={submitting}
+                onChange={(event) => setTopP(event.target.value)}
+              />
+              <small className="muted">
+                Nucleus sampling: keep only the most probable tokens summing to this
+                mass. Only matters when temperature &gt; 0. Typical: 0.9.
+              </small>
+            </label>
+            <label>
+              <span>num_ctx</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={numCtxValue}
+                placeholder="model default"
+                disabled={submitting}
+                onChange={(event) => setNumCtx(event.target.value)}
+              />
+              <small className="muted">
+                Context window in tokens. Bigger = more board history fits, but slower
+                and more VRAM. Long games may need 16k–32k.
+              </small>
+            </label>
+            <label>
+              <span>num_predict</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={numPredictValue}
+                placeholder="model default"
+                disabled={submitting}
+                onChange={(event) => setNumPredict(event.target.value)}
+              />
+              <small className="muted">
+                Max tokens generated per move. The move JSON is tiny, but thinking
+                models need room (≥512). Too low can truncate the answer.
+              </small>
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={submitting || saveDefaultsMutation.isPending}
+              onClick={() => saveDefaultsMutation.mutate(samplingPayload())}
             >
-              <option value="strict">Strict deterministic</option>
-              <option value="low_creativity">Low creativity</option>
-            </select>
-          </label>
+              {saveDefaultsMutation.isPending ? "Saving" : "Save as default"}
+            </button>
+            {savedNotice && <span className="muted compact">Saved as default.</span>}
+            {saveDefaultsMutation.error && (
+              <span className="error-text">{saveDefaultsMutation.error.message}</span>
+            )}
+          </details>
           <label className="checkbox-row">
             <input
               type="checkbox"
@@ -946,7 +1078,7 @@ function jobLabel(job: GameJob) {
 }
 
 function ollamaJobOptions(job: GameJob) {
-  const options: string[] = [job.ollama_preset];
+  const options: string[] = [`temp ${job.temperature}`];
   if (job.ollama_thinking) {
     options.push("thinking");
   }
@@ -1424,6 +1556,32 @@ function modelRuntimeStats(game: GameDetail | undefined, color: "white" | "black
       averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
     },
   );
+}
+
+function gameOutcome(game: GameDetail | undefined): "white" | "black" | "draw" | null {
+  switch (game?.result) {
+    case "1-0":
+      return "white";
+    case "0-1":
+      return "black";
+    case "1/2-1/2":
+      return "draw";
+    default:
+      return null;
+  }
+}
+
+function cardOutcome(
+  color: "white" | "black",
+  outcome: "white" | "black" | "draw" | null,
+): "winner" | "loser" | "draw" | null {
+  if (outcome === null) {
+    return null;
+  }
+  if (outcome === "draw") {
+    return "draw";
+  }
+  return outcome === color ? "winner" : "loser";
 }
 
 function modelStatus(

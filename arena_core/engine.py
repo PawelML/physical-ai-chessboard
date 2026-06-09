@@ -292,7 +292,7 @@ class ArenaGame:
                 "error": parsed.error_type or "illegal_move",
                 "attempted_move": parsed.move,
                 "reason": parsed.reason or legal_reason,
-                "legal_moves": sorted(self.board.san(move) for move in self.board.legal_moves),
+                "legal_moves": sorted(move.uci() for move in self.board.legal_moves),
                 "remaining_retries": remaining,
             }
         return False
@@ -341,21 +341,16 @@ class ArenaGame:
     def _validate_move(self, parsed: ParsedMove) -> tuple[bool, str | None, chess.Move | None]:
         if not parsed.parse_ok or parsed.move is None:
             return False, parsed.reason, None
-        move = self._coerce_move(parsed.move)
+        move = self._parse_uci_move(parsed.move)
         if move is None:
-            return False, f"{parsed.move} is not valid SAN or UCI syntax", None
+            return False, f"{parsed.move} is not valid UCI syntax", None
         if move not in self.board.legal_moves:
             return False, f"{parsed.move} is not legal in the current position", None
         return True, None, move
 
-    def _coerce_move(self, text: str) -> chess.Move | None:
-        """Accept SAN (preferred, intuitive for LLMs) or fall back to raw UCI."""
+    def _parse_uci_move(self, text: str) -> chess.Move | None:
+        """Accept only raw UCI so models have a single move contract."""
         candidate = text.strip()
-        try:
-            # parse_san only returns moves that are legal in the current position.
-            return self.board.parse_san(candidate)
-        except ValueError:
-            pass
         try:
             return chess.Move.from_uci(candidate.lower())
         except ValueError:

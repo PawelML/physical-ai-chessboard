@@ -9,7 +9,7 @@ from typing import Literal
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +17,7 @@ from arena_core.cli import _play_async
 from arena_core.config import Settings, get_settings
 from arena_core.persistence.database import create_session_factory
 from arena_core.persistence.models import (
+    AppSetting,
     Attempt,
     BenchmarkRun,
     EngineEvaluation,
@@ -32,8 +33,18 @@ from arena_core.reports import export_game_report
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed"]
-OllamaPreset = Literal["strict", "low_creativity"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
+
+GAME_DEFAULTS_KEY = "game_defaults"
+
+
+class GameDefaults(BaseModel):
+    """Per-model sampling/runtime knobs surfaced in the UI and saved as defaults."""
+
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    num_ctx: int | None = Field(default=None, gt=0)
+    num_predict: int | None = Field(default=None, gt=0)
 
 
 class GameJob(BaseModel):
@@ -42,7 +53,10 @@ class GameJob(BaseModel):
     white: str
     black: str
     legality_mode: str
-    ollama_preset: OllamaPreset
+    temperature: float = 0.0
+    top_p: float | None = None
+    num_ctx: int | None = None
+    num_predict: int | None = None
     ollama_thinking: bool = False
     ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode
@@ -65,7 +79,10 @@ class StartGameRequest(BaseModel):
     white: str
     black: str
     legality_mode: Literal["open", "constrained"] = "constrained"
-    ollama_preset: OllamaPreset = "strict"
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    num_ctx: int | None = Field(default=None, gt=0)
+    num_predict: int | None = Field(default=None, gt=0)
     ollama_thinking: bool = False
     ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode = "legal_list"
@@ -281,6 +298,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def list_game_jobs() -> list[GameJob]:
         return sorted(game_jobs.values(), key=lambda job: job.created_at, reverse=True)
 
+    @api.get("/settings/game-defaults")
+    async def get_game_defaults() -> GameDefaults:
+        async with session_factory() as session:
+            row = await session.get(AppSetting, GAME_DEFAULTS_KEY)
+            if row is None:
+                return GameDefaults()
+            return GameDefaults.model_validate(row.value)
+
+    @api.put("/settings/game-defaults")
+    async def put_game_defaults(payload: GameDefaults) -> GameDefaults:
+        async with session_factory() as session:
+            async with session.begin():
+                row = await session.get(AppSetting, GAME_DEFAULTS_KEY)
+                if row is None:
+                    session.add(AppSetting(key=GAME_DEFAULTS_KEY, value=payload.model_dump()))
+                else:
+                    row.value = payload.model_dump()
+        return payload
+
     @api.post("/games/start")
     async def start_game(payload: StartGameRequest) -> StartGameResponse:
         from fastapi import HTTPException
@@ -299,7 +335,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             white=white,
             black=black,
             legality_mode=payload.legality_mode,
-            ollama_preset=payload.ollama_preset,
+            temperature=payload.temperature,
+            top_p=payload.top_p,
+            num_ctx=payload.num_ctx,
+            num_predict=payload.num_predict,
             ollama_thinking=payload.ollama_thinking,
             ollama_cpu_offload=payload.ollama_cpu_offload,
             guidance_mode=payload.guidance_mode,
@@ -315,7 +354,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 white=white,
                 black=black,
                 legality_mode=payload.legality_mode,
-                ollama_preset=payload.ollama_preset,
+                sampling=GameDefaults(
+                    temperature=payload.temperature,
+                    top_p=payload.top_p,
+                    num_ctx=payload.num_ctx,
+                    num_predict=payload.num_predict,
+                ),
                 ollama_thinking=payload.ollama_thinking,
                 ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
@@ -692,7 +736,7 @@ async def _run_game_job(
     white: str,
     black: str,
     legality_mode: str,
-    ollama_preset: OllamaPreset,
+    sampling: GameDefaults,
     ollama_thinking: bool,
     ollama_cpu_offload: bool,
     guidance_mode: GuidanceMode,
@@ -706,7 +750,7 @@ async def _run_game_job(
         result, _attempt_log = await _play_async(
             settings=_settings_for_ollama_options(
                 settings,
-                preset=ollama_preset,
+                sampling=sampling,
                 thinking=ollama_thinking,
                 cpu_offload=ollama_cpu_offload,
             ),
@@ -744,20 +788,14 @@ async def _run_game_job(
 def _settings_for_ollama_options(
     settings: Settings,
     *,
-    preset: OllamaPreset,
+    sampling: GameDefaults,
     thinking: bool,
     cpu_offload: bool,
 ) -> Settings:
-    if preset == "low_creativity":
-        temperature = 0.2
-        top_p: float | None = 0.9
-        num_ctx: int | None = 32768
-        num_predict: int | None = 128
-    else:
-        temperature = 0.0
-        top_p = None
-        num_ctx = None
-        num_predict = None
+    temperature = sampling.temperature
+    top_p = sampling.top_p
+    num_ctx = sampling.num_ctx
+    num_predict = sampling.num_predict
 
     think = "off"
     if thinking:

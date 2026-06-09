@@ -154,7 +154,10 @@ export type GameJob = {
   white: string;
   black: string;
   legality_mode: string;
-  ollama_preset: OllamaPreset;
+  temperature: number;
+  top_p: number | null;
+  num_ctx: number | null;
+  num_predict: number | null;
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
@@ -167,14 +170,23 @@ export type GameJob = {
   completed_at: string | null;
 };
 
-export type OllamaPreset = "strict" | "low_creativity";
 export type GuidanceMode = "legal_list" | "strategic_memory";
+
+export type GameDefaults = {
+  temperature: number;
+  top_p: number | null;
+  num_ctx: number | null;
+  num_predict: number | null;
+};
 
 export type StartGamePayload = {
   white: string;
   black: string;
   legality_mode: "open" | "constrained";
-  ollama_preset: OllamaPreset;
+  temperature: number;
+  top_p: number | null;
+  num_ctx: number | null;
+  num_predict: number | null;
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
@@ -217,6 +229,19 @@ async function getJson<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${message}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function putJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
@@ -275,4 +300,12 @@ export function fetchGameJobs(): Promise<GameJob[]> {
 
 export function startGame(payload: StartGamePayload): Promise<{ job_id: string; status: string }> {
   return postJson<{ job_id: string; status: string }>("/games/start", payload);
+}
+
+export function fetchGameDefaults(): Promise<GameDefaults> {
+  return getJson<GameDefaults>("/settings/game-defaults");
+}
+
+export function saveGameDefaults(payload: GameDefaults): Promise<GameDefaults> {
+  return putJson<GameDefaults>("/settings/game-defaults", payload);
 }

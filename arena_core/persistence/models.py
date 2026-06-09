@@ -295,3 +295,12 @@ class OperationalEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     run: Mapped[BenchmarkRun | None] = relationship(back_populates="operational_events")
+
+
+class AppSetting(Base):
+    """Key-value store for UI-managed preferences (e.g. default sampling params)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
