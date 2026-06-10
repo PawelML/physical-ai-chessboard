@@ -21,6 +21,7 @@ arena play random random --db-url sqlite+aiosqlite:///./arena.db
 arena play <ollama-model> random --legality-mode constrained --stockfish-path <path>
 arena tournament <a> <b> --name run1 --seed 0                   # both-colors pairing + summaries
 arena rebuild-summaries [--run-id N]                            # rematerialize game_summaries
+arena annotate-game <game_id> [--persona technician] [--model <ollama>]  # post-hoc commentary
 arena export-report <game_id> [-o out.md]
 arena show-db                                                   # resolve configured DB path
 
@@ -58,22 +59,39 @@ HTTP/SSE API. This boundary is load-bearing — don't import FastAPI into `arena
 ```
 arena_core/
   engine.py        ArenaGame move loop; MoveSource Protocol (the embodied-phase seam):
-                   RandomMoveSource, StaticMoveSource, LLMMoveSource, StockfishMoveSource
+                   RandomMoveSource, StaticMoveSource, LLMMoveSource, StockfishMoveSource.
+                   play_human_move / _HumanApiMoveSource feed the interactive human mode.
   prompts.py       versioned templates, {strict,reasoning} × {open,constrained} legality modes
   parser.py        extract the move string (SAN or UCI) from raw model JSON
   move_sources.py  source resolution helpers
   llm/             LLMService ABC -> LLMResponse; OpenAICompatible(Ollama), Anthropic, Gemini
   evaluators/      Stockfish UCI wrapper (fixed nodes, pinned binary) -> CPL, classification
-  tournaments.py   pairings, run config + config_hash, writes benchmark_runs + children
+  tournaments.py   pairings, run config + config_hash, writes benchmark_runs + children;
+                   game_count + on_game_started/on_game_completed callbacks drive live matches
   leaderboards.py  rebuild_game_summaries (materialized aggregates)
   annotations.py   persona commentary over already-scored moves (NOT a scoring path)
   reports.py       per-game Markdown export
   telemetry.py     approximate token counts, context usage, latency, VRAM/offload detection
   persistence/     SQLAlchemy 2.0 async models + repositories (SQLite now, Postgres-ready)
   config.py        pydantic-settings, env prefix ARENA_
-backend/main.py    create_app(): game-job runner, runs/games/leaderboard queries, SSE stream
-frontend/src/      App.tsx, api.ts, chess.ts (TanStack Query)
+backend/main.py    create_app(): in-process GameJob runner (JobKind "game" |
+                   "stockfish_match"), runs/games/leaderboard queries, SSE stream
+                   (/stream/games), runtime telemetry, persisted game-defaults, and the
+                   interactive-human + live-Stockfish-match orchestration (below)
+frontend/src/      App.tsx, api.ts, chess.ts (TanStack Query); replay, leaderboard,
+                   interactive human board, live-match progress
 ```
+
+### Interactive & live modes (backend-orchestrated, no CLI equivalent)
+
+- **Human vs. model** — POST `/human-games/start`, then drive turn-by-turn via
+  GET `/human-games/{id}`, POST `/human-games/{id}/move`, POST `/human-games/{id}/cancel`.
+  Each game holds an `asyncio.Lock`; `engine.play_human_move` advances one ply against
+  an `_HumanApiMoveSource`. python-chess still owns state — the same invariants apply.
+- **Live Stockfish match** — POST `/matches/stockfish/start` spawns a `stockfish_match`
+  GameJob over N games (`game_count`), reporting progress via `games_requested` /
+  `games_completed` / `game_ids` as `tournaments` callbacks fire. Levels: `beginner`
+  (~1320 ELO) / `club` (~1600 ELO).
 
 ## Invariants that are easy to break
 
@@ -89,7 +107,7 @@ frontend/src/      App.tsx, api.ts, chess.ts (TanStack Query)
   (legal moves provided). On any *retry*, legal moves are always provided regardless
   of mode.
 - **Prompt versioning is mandatory.** Every template change bumps `prompt_version`
-  (currently `strict-v6` in `config.py`) and `template_hash`, both stored per attempt.
+  (currently `strict-v7` in `config.py`) and `template_hash`, both stored per attempt.
   Comparisons across prompt versions must be explicit.
 - **Move contract is SAN, with UCI fallback.** The strict prompt asks for SAN
   (`{"move":"e4"}`) and states the win objective; `engine._coerce_move` tries
