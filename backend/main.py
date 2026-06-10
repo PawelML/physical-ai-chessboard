@@ -378,6 +378,44 @@ class RunComparisonRow(BaseModel):
     total_tokens: int
 
 
+class ModelComparisonRow(BaseModel):
+    model_key: str
+    label: str
+    model_snapshot_id: int | None
+    legality_mode: str
+    color: str
+    run_count: int
+    games_played: int
+    wins: int
+    draws: int
+    losses: int
+    unfinished: int
+    avg_game_plies: float
+    avg_cpl: float | None
+    evaluated_move_count: int
+    accuracy_rate: float
+    blunders: int
+    mistakes: int
+    inaccuracies: int
+    attempt_count: int
+    illegal_attempts: int
+    malformed_attempts: int
+    illegal_rate: float
+    illegal_rate_ci_low: float
+    illegal_rate_ci_high: float
+    malformed_rate: float
+    malformed_rate_ci_low: float
+    malformed_rate_ci_high: float
+    win_rate: float
+    win_rate_ci_low: float
+    win_rate_ci_high: float
+    low_sample: bool
+    avg_retries: float
+    forfeit_invalid_count: int
+    avg_latency_ms: float
+    total_tokens: int
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     effective_settings = settings or get_settings()
     session_factory = create_session_factory(effective_settings.database_url)
@@ -841,6 +879,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _comparison_row(run_id, rows)
             for run_id, rows in sorted(grouped.items(), reverse=True)
         ]
+
+    @api.get("/models/compare")
+    async def compare_models(
+        legality_mode: str | None = None,
+        color: str | None = None,
+    ) -> list[ModelComparisonRow]:
+        async with session_factory() as session:
+            query = select(GameSummary, RunParticipant).join(
+                RunParticipant,
+                RunParticipant.id == GameSummary.run_participant_id,
+            )
+            if legality_mode is not None:
+                query = query.where(GameSummary.legality_mode == legality_mode)
+            # "all" (or unset) means combine both colors; otherwise filter to one.
+            if color is not None and color != "all":
+                query = query.where(GameSummary.color == color)
+            rows = (await session.execute(query)).all()
+        # Group by model identity AND legality_mode so open/constrained never mix
+        # into one row (separate benchmarks), even when no legality filter is given.
+        grouped: dict[str, list[tuple[GameSummary, RunParticipant]]] = {}
+        for summary, participant in rows:
+            if summary.model_snapshot_id is not None:
+                identity = f"snap:{summary.model_snapshot_id}"
+            else:
+                identity = f"name:{participant.display_name}"
+            grouped.setdefault(f"{identity}|{summary.legality_mode}", []).append(
+                (summary, participant)
+            )
+        combined_color = color if color is not None else "all"
+        comparison = [
+            _model_comparison_row(key, pairs, combined_color)
+            for key, pairs in grouped.items()
+        ]
+        comparison.sort(
+            key=lambda row: (-row.win_rate, row.avg_cpl if row.avg_cpl is not None else 1e9)
+        )
+        return comparison
 
     @api.get("/leaderboard")
     async def leaderboard(
@@ -1810,6 +1885,69 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
         win_rate_ci_high=win_rate_ci_high,
         low_sample=games_played < 10,
         avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),
+        avg_latency_ms=_weighted_average([(row.avg_latency_ms, row.games_played) for row in rows]),
+        total_tokens=total_tokens,
+    )
+
+
+def _model_comparison_row(
+    key: str,
+    pairs: list[tuple[GameSummary, RunParticipant]],
+    color: str,
+) -> ModelComparisonRow:
+    rows = [summary for summary, _ in pairs]
+    participant = pairs[0][1]
+    games_played = sum(row.games_played for row in rows)
+    wins = sum(row.wins for row in rows)
+    draws = sum(row.draws for row in rows)
+    losses = sum(row.losses for row in rows)
+    unfinished = sum(row.unfinished for row in rows)
+    total_tokens = sum(row.total_tokens for row in rows)
+    evaluated_move_count = sum(row.evaluated_move_count for row in rows)
+    attempt_count = sum(row.attempt_count for row in rows)
+    illegal_attempts = sum(row.illegal_attempts for row in rows)
+    malformed_attempts = sum(row.malformed_attempts for row in rows)
+    win_rate_ci_low, win_rate_ci_high = wilson_interval(wins, games_played)
+    illegal_rate_ci_low, illegal_rate_ci_high = wilson_interval(illegal_attempts, attempt_count)
+    malformed_rate_ci_low, malformed_rate_ci_high = wilson_interval(
+        malformed_attempts, attempt_count
+    )
+    return ModelComparisonRow(
+        model_key=key,
+        label=participant.display_name,
+        model_snapshot_id=rows[0].model_snapshot_id,
+        legality_mode=rows[0].legality_mode,
+        color=color,
+        run_count=len({row.run_id for row in rows}),
+        games_played=games_played,
+        wins=wins,
+        draws=draws,
+        losses=losses,
+        unfinished=unfinished,
+        avg_game_plies=_weighted_average([(row.avg_game_plies, row.games_played) for row in rows]),
+        avg_cpl=_weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
+        evaluated_move_count=evaluated_move_count,
+        accuracy_rate=_weighted_average(
+            [(row.accuracy_rate, row.evaluated_move_count) for row in rows]
+        ),
+        blunders=sum(row.blunders for row in rows),
+        mistakes=sum(row.mistakes for row in rows),
+        inaccuracies=sum(row.inaccuracies for row in rows),
+        attempt_count=attempt_count,
+        illegal_attempts=illegal_attempts,
+        malformed_attempts=malformed_attempts,
+        illegal_rate=_weighted_average([(row.illegal_rate, row.attempt_count) for row in rows]),
+        illegal_rate_ci_low=illegal_rate_ci_low,
+        illegal_rate_ci_high=illegal_rate_ci_high,
+        malformed_rate=_weighted_average([(row.malformed_rate, row.attempt_count) for row in rows]),
+        malformed_rate_ci_low=malformed_rate_ci_low,
+        malformed_rate_ci_high=malformed_rate_ci_high,
+        win_rate=wins / games_played if games_played else 0.0,
+        win_rate_ci_low=win_rate_ci_low,
+        win_rate_ci_high=win_rate_ci_high,
+        low_sample=games_played < 10,
+        avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),
+        forfeit_invalid_count=sum(row.forfeit_invalid_count for row in rows),
         avg_latency_ms=_weighted_average([(row.avg_latency_ms, row.games_played) for row in rows]),
         total_tokens=total_tokens,
     )

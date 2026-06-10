@@ -168,6 +168,49 @@ export type RunComparisonRow = {
   total_tokens: number;
 };
 
+export type ModelComparisonRow = {
+  model_key: string;
+  label: string;
+  model_snapshot_id: number | null;
+  legality_mode: string;
+  color: string;
+  run_count: number;
+  games_played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  unfinished: number;
+  avg_game_plies: number;
+  avg_cpl: number | null;
+  evaluated_move_count: number;
+  accuracy_rate: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  attempt_count: number;
+  illegal_attempts: number;
+  malformed_attempts: number;
+  illegal_rate: number;
+  illegal_rate_ci_low: number;
+  illegal_rate_ci_high: number;
+  malformed_rate: number;
+  malformed_rate_ci_low: number;
+  malformed_rate_ci_high: number;
+  win_rate: number;
+  win_rate_ci_low: number;
+  win_rate_ci_high: number;
+  low_sample: boolean;
+  avg_retries: number;
+  forfeit_invalid_count: number;
+  avg_latency_ms: number;
+  total_tokens: number;
+};
+
+export type ModelComparisonFilters = {
+  legalityMode?: string;
+  color?: string;
+};
+
 export type ModelOption = {
   id: string;
   label: string;
@@ -368,6 +411,20 @@ export function fetchRunEvents(runId: number): Promise<OperationalEvent[]> {
 
 export function fetchRunComparison(): Promise<RunComparisonRow[]> {
   return getJson<RunComparisonRow[]>("/runs/compare");
+}
+
+export function fetchModelComparison(
+  filters: ModelComparisonFilters = {},
+): Promise<ModelComparisonRow[]> {
+  const params = new URLSearchParams();
+  if (filters.legalityMode) {
+    params.set("legality_mode", filters.legalityMode);
+  }
+  if (filters.color) {
+    params.set("color", filters.color);
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return getJson<ModelComparisonRow[]>(`/models/compare${suffix}`);
 }
 
 export function fetchModelOptions(): Promise<ModelOption[]> {

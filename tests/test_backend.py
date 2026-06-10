@@ -176,6 +176,49 @@ async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
     assert "accuracy_rate" in comparison_response.json()[0]
 
 
+async def test_backend_compares_models_across_runs(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+
+    for name in ("run-a", "run-b"):
+        async with session_factory() as session:
+            async with session.begin():
+                result = await run_tournament(
+                    session=session,
+                    config=TournamentConfig(
+                        name=name,
+                        competitor_a="random",
+                        competitor_b="random",
+                        max_plies=1,
+                    ),
+                    settings=Settings(max_retries=0),
+                    source_factory=lambda _name: RandomMoveSource(),
+                )
+                await rebuild_game_summaries(session, run_id=result.run_id)
+
+    client = TestClient(create_app(Settings(database_url=db_url)))
+    response = client.get("/models/compare?legality_mode=open&color=all")
+
+    assert response.status_code == 200
+    rows = response.json()
+    # Both runs pit "random" vs "random" -> one aggregated model row in open mode.
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["label"] == "random"
+    assert row["legality_mode"] == "open"
+    assert row["color"] == "all"
+    assert row["run_count"] == 2
+    assert row["games_played"] == 80
+    assert "win_rate_ci_low" in row
+    assert "illegal_rate_ci_high" in row
+
+    # Legality filtering keeps modes separate: constrained has no random games here.
+    constrained = client.get("/models/compare?legality_mode=constrained")
+    assert constrained.status_code == 200
+    assert constrained.json() == []
+
+
 async def test_backend_builds_game_stream_snapshots(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
     await init_db(db_url)

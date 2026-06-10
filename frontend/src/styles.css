@@ -676,6 +676,134 @@ h4 {
   font-size: 0.9rem;
 }
 
+/* Top-level Arena / Models view toggle */
+.app-root {
+  min-height: 100vh;
+}
+
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  border-bottom: 1px solid #d8d2c5;
+  background: #fbfaf7;
+}
+
+.view-toggle-brand {
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  margin-right: 12px;
+}
+
+.view-toggle button {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #68756f;
+  padding: 6px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.view-toggle button.active {
+  background: #ffffff;
+  border-color: #d8d2c5;
+  color: #1e6b58;
+}
+
+/* Model comparison matrix */
+.model-comparison {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 22px 48px;
+}
+
+.model-comparison-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.model-comparison-header h1 {
+  margin: 4px 0 6px;
+}
+
+.matrix-table {
+  overflow-x: auto;
+  border: 1px solid #e3ded4;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.matrix-head,
+.matrix-row {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+}
+
+.matrix-head {
+  position: sticky;
+  top: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid #d8d2c5;
+  background: #f4f2ed;
+}
+
+.matrix-model {
+  font-weight: 800;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.matrix-row {
+  padding: 10px 14px;
+  border-top: 1px solid #ebe6dc;
+  font-size: 0.92rem;
+}
+
+.matrix-row:first-of-type {
+  border-top: none;
+}
+
+.matrix-metric {
+  display: flex;
+  flex-direction: column;
+  color: #17201c;
+  font-weight: 700;
+}
+
+.matrix-metric small {
+  color: #68756f;
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: none;
+}
+
+.matrix-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.matrix-cell.best {
+  background: rgba(30, 107, 88, 0.12);
+  color: #145442;
+  font-weight: 800;
+}
+
+.matrix-footnote {
+  margin-top: 14px;
+  color: #68756f;
+  font-size: 0.8rem;
+}
+
 .board-wrap {
   width: 100%;
   max-width: 680px;

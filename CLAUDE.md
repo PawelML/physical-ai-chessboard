@@ -31,6 +31,10 @@ ARENA_DATABASE_URL=sqlite+aiosqlite:///./arena.db uvicorn backend.main:app --rel
 # Frontend (React 19 + Vite replay/leaderboard UI)
 cd frontend && npm install && npm run dev
 
+# Backend + frontend together, reachable on the LAN (http://<ip>:5173); Ctrl-C stops both.
+# Frees stale ports first; no boot/auto-start. Override DB via ARENA_DATABASE_URL.
+bash scripts/run-dev.sh
+
 # Local Stockfish without sudo
 bash scripts/install_stockfish.sh
 export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"

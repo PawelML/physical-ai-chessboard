@@ -28,6 +28,7 @@ import {
   fetchGames,
   fetchHumanGames,
   fetchLeaderboard,
+  fetchModelComparison,
   fetchModelOptions,
   fetchRunComparison,
   fetchRunEvents,
@@ -44,6 +45,7 @@ import {
   type GuidanceMode,
   type HumanGameState,
   type LeaderboardRow,
+  type ModelComparisonRow,
   type ModelOption,
   type Move,
   type RuntimeTelemetry,
@@ -90,6 +92,7 @@ export default function App() {
     queryKey: ["run-comparison"],
     queryFn: fetchRunComparison,
   });
+  const [appView, setAppView] = useState<"arena" | "models">("arena");
   const [sidebarTab, setSidebarTab] = useState<"start" | "history">("start");
   const [workspaceTab, setWorkspaceTab] = useState<"debug" | "analysis" | "benchmark">("debug");
   const [liveEvents, setLiveEvents] = useState(0);
@@ -316,9 +319,44 @@ export default function App() {
     setIsPlaying((value) => !value);
   };
 
+  const viewToggle = (
+    <nav className="view-toggle" role="tablist" aria-label="Application view">
+      <span className="view-toggle-brand">Chess Arena</span>
+      <button
+        className={appView === "arena" ? "active" : ""}
+        type="button"
+        role="tab"
+        aria-selected={appView === "arena"}
+        onClick={() => setAppView("arena")}
+      >
+        Arena
+      </button>
+      <button
+        className={appView === "models" ? "active" : ""}
+        type="button"
+        role="tab"
+        aria-selected={appView === "models"}
+        onClick={() => setAppView("models")}
+      >
+        Models
+      </button>
+    </nav>
+  );
+
+  if (appView === "models") {
+    return (
+      <div className="app-root">
+        {viewToggle}
+        <ModelComparison />
+      </div>
+    );
+  }
+
   return (
-    <main className="arena-shell">
-      <aside className="sidebar">
+    <div className="app-root">
+      {viewToggle}
+      <main className="arena-shell">
+        <aside className="sidebar">
         <div className="sidebar-header">
           <div>
             <p className="eyebrow">Software Arena</p>
@@ -546,7 +584,8 @@ export default function App() {
           />
         )}
       </section>
-    </main>
+      </main>
+    </div>
   );
 }
 
@@ -2508,6 +2547,233 @@ function Leaderboard({
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+type MetricDirection = "higher" | "lower" | "none";
+
+type MatrixMetric = {
+  label: string;
+  hint?: string;
+  direction: MetricDirection;
+  get: (row: ModelComparisonRow) => number | null;
+  format: (row: ModelComparisonRow) => string;
+  title?: (row: ModelComparisonRow) => string | undefined;
+};
+
+const MATRIX_METRICS: MatrixMetric[] = [
+  {
+    label: "Games played",
+    direction: "none",
+    get: (r) => r.games_played,
+    format: (r) => `${r.games_played}`,
+    title: (r) => `${r.run_count} run(s)`,
+  },
+  {
+    label: "Win rate",
+    hint: "wins / games",
+    direction: "higher",
+    get: (r) => (r.games_played ? r.win_rate : null),
+    format: (r) => (r.games_played ? percent(r.win_rate) : "—"),
+    title: (r) => `95% CI ${percent(r.win_rate_ci_low)}–${percent(r.win_rate_ci_high)}`,
+  },
+  {
+    label: "Record W-D-L-U",
+    direction: "none",
+    get: () => null,
+    format: (r) => `${r.wins}-${r.draws}-${r.losses}-${r.unfinished}`,
+  },
+  {
+    label: "Illegal-move rate",
+    hint: "lower is better",
+    direction: "lower",
+    get: (r) => (r.attempt_count ? r.illegal_rate : null),
+    format: (r) => (r.attempt_count ? percent(r.illegal_rate) : "—"),
+    title: (r) => `95% CI ${percent(r.illegal_rate_ci_low)}–${percent(r.illegal_rate_ci_high)}`,
+  },
+  {
+    label: "Malformed-parse rate",
+    hint: "lower is better",
+    direction: "lower",
+    get: (r) => (r.attempt_count ? r.malformed_rate : null),
+    format: (r) => (r.attempt_count ? percent(r.malformed_rate) : "—"),
+    title: (r) =>
+      `95% CI ${percent(r.malformed_rate_ci_low)}–${percent(r.malformed_rate_ci_high)}`,
+  },
+  {
+    label: "Accuracy",
+    hint: "evaluated moves",
+    direction: "higher",
+    get: (r) => (r.evaluated_move_count ? r.accuracy_rate : null),
+    format: (r) =>
+      r.evaluated_move_count ? `${percent(r.accuracy_rate)} (n=${r.evaluated_move_count})` : "—",
+  },
+  {
+    label: "Avg CPL",
+    hint: "centipawn loss, lower is better",
+    direction: "lower",
+    get: (r) => r.avg_cpl,
+    format: (r) => (r.avg_cpl === null ? "—" : r.avg_cpl.toFixed(1)),
+  },
+  {
+    label: "Blunders / game",
+    hint: "lower is better",
+    direction: "lower",
+    get: (r) => (r.games_played ? r.blunders / r.games_played : null),
+    format: (r) => (r.games_played ? (r.blunders / r.games_played).toFixed(2) : "—"),
+  },
+  {
+    label: "Avg game length",
+    hint: "moves",
+    direction: "none",
+    get: (r) => r.avg_game_plies,
+    format: (r) => movesLabel(r.avg_game_plies),
+  },
+  {
+    label: "Avg retries / move",
+    hint: "lower is better",
+    direction: "lower",
+    get: (r) => r.avg_retries,
+    format: (r) => r.avg_retries.toFixed(2),
+  },
+  {
+    label: "Avg latency",
+    hint: "per move, lower is better",
+    direction: "lower",
+    get: (r) => r.avg_latency_ms,
+    format: (r) =>
+      r.avg_latency_ms >= 1000
+        ? `${(r.avg_latency_ms / 1000).toFixed(1)}s`
+        : `${Math.round(r.avg_latency_ms)}ms`,
+  },
+  {
+    label: "Forfeit rate",
+    hint: "forfeit_invalid / games, lower is better",
+    direction: "lower",
+    get: (r) => (r.games_played ? r.forfeit_invalid_count / r.games_played : null),
+    format: (r) =>
+      r.games_played ? percent(r.forfeit_invalid_count / r.games_played) : "—",
+  },
+  {
+    label: "Total tokens",
+    direction: "none",
+    get: (r) => r.total_tokens,
+    format: (r) => r.total_tokens.toLocaleString(),
+  },
+];
+
+function bestColumns(values: (number | null)[], direction: MetricDirection): Set<number> {
+  const best = new Set<number>();
+  if (direction === "none") {
+    return best;
+  }
+  const known = values.filter((value): value is number => value !== null);
+  if (known.length < 2) {
+    return best; // nothing to compare against
+  }
+  const target = direction === "higher" ? Math.max(...known) : Math.min(...known);
+  values.forEach((value, index) => {
+    if (value !== null && value === target) {
+      best.add(index);
+    }
+  });
+  return best;
+}
+
+function ModelComparison() {
+  const [legality, setLegality] = useState<string>("constrained");
+  const [color, setColor] = useState<string>("all");
+  const comparisonQuery = useQuery({
+    queryKey: ["model-comparison", legality, color],
+    queryFn: () => fetchModelComparison({ legalityMode: legality, color }),
+  });
+  const rows = comparisonQuery.data ?? [];
+  const hasLowSample = rows.some((row) => row.low_sample);
+  const gridTemplate = {
+    gridTemplateColumns: `minmax(180px, 220px) repeat(${rows.length}, minmax(120px, 1fr))`,
+  };
+
+  return (
+    <section className="model-comparison">
+      <header className="model-comparison-header">
+        <div>
+          <p className="eyebrow">Benchmark Aggregate</p>
+          <h1>Model Comparison</h1>
+          <p className="muted">
+            Per-model results aggregated across all runs. Best value in each row is
+            highlighted. Open and constrained legality are separate benchmarks.
+          </p>
+        </div>
+        <div className="filter-row">
+          <select
+            aria-label="Legality mode"
+            value={legality}
+            onChange={(event) => setLegality(event.target.value)}
+          >
+            <option value="constrained">Constrained</option>
+            <option value="open">Open</option>
+          </select>
+          <select
+            aria-label="Color"
+            value={color}
+            onChange={(event) => setColor(event.target.value)}
+          >
+            <option value="all">Both colors</option>
+            <option value="white">White</option>
+            <option value="black">Black</option>
+          </select>
+        </div>
+      </header>
+
+      {comparisonQuery.isLoading ? (
+        <p className="muted">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="muted">
+          No materialized summaries yet for this mode. Play games, then run{" "}
+          <code>arena rebuild-summaries</code> (Stockfish matches rebuild automatically).
+        </p>
+      ) : (
+        <div className="matrix-table">
+          <div className="matrix-head" style={gridTemplate}>
+            <span className="matrix-metric">Metric</span>
+            {rows.map((row) => (
+              <span key={row.model_key} className="matrix-model" title={row.model_key}>
+                {row.label}
+                {row.low_sample ? <sup>*</sup> : null}
+              </span>
+            ))}
+          </div>
+          {MATRIX_METRICS.map((metric) => {
+            const values = rows.map((row) => metric.get(row));
+            const best = bestColumns(values, metric.direction);
+            return (
+              <div key={metric.label} className="matrix-row" style={gridTemplate}>
+                <span className="matrix-metric">
+                  {metric.label}
+                  {metric.hint ? <small>{metric.hint}</small> : null}
+                </span>
+                {rows.map((row, index) => (
+                  <span
+                    key={row.model_key}
+                    className={best.has(index) ? "matrix-cell best" : "matrix-cell"}
+                    title={metric.title?.(row)}
+                  >
+                    {metric.format(row)}
+                  </span>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {hasLowSample ? (
+        <p className="matrix-footnote">
+          <sup>*</sup> fewer than 10 games — rates have wide confidence intervals; hover a
+          cell for the 95% CI.
+        </p>
+      ) : null}
     </section>
   );
 }
