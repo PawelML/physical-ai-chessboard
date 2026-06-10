@@ -19,6 +19,26 @@ class BuiltPrompt:
     template_hash: str
 
 
+@dataclass
+class _PromptTemplate:
+    rendered_parts: list[str]
+    skeleton_parts: list[str]
+
+    def add(self, template: str, **values: object) -> None:
+        self.rendered_parts.append(template.format(**values) if values else template)
+        self.skeleton_parts.append(template)
+
+    def extend(self, templates: list[str]) -> None:
+        self.rendered_parts.extend(templates)
+        self.skeleton_parts.extend(templates)
+
+    def rendered(self) -> str:
+        return "\n".join(self.rendered_parts)
+
+    def skeleton(self) -> str:
+        return "\n".join(self.skeleton_parts)
+
+
 def template_hash(template_text: str) -> str:
     return sha256(template_text.encode("utf-8")).hexdigest()
 
@@ -37,92 +57,105 @@ def build_strict_prompt(
     version: str = STRICT_TEMPLATE_VERSION,
 ) -> BuiltPrompt:
     side = "white" if board.turn == chess.WHITE else "black"
-    parts = [
-        "You are playing a competitive chess game and your goal is to win.",
-        (
-            "Win by checkmating the opponent's king; if a win is out of reach, "
-            "play for a draw rather than a loss."
+    template = _PromptTemplate(rendered_parts=[], skeleton_parts=[])
+    template.extend(
+        [
+            "You are playing a competitive chess game and your goal is to win.",
+            (
+                "Win by checkmating the opponent's king; if a win is out of reach, "
+                "play for a draw rather than a loss."
+            ),
+            (
+                "Among the legal moves, choose the strongest one: develop your pieces, "
+                "fight for the center, keep your own king safe, and never give away "
+                "material for free."
+            ),
+            (
+                "Before committing, look for checks, captures and threats — both your own "
+                "tactical chances and the opponent's threats against you."
+            ),
+            (
+                "Return only strict JSON in this exact shape: "
+                "{\"move\":\"e2e4\",\"rationale\":\"short reason\","
+                "\"strategy_update\":{\"objective\":\"short updated plan\"}}."
+                if strategic_memory is not None
+                else "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}."
+            ),
+            (
+                "The move value must be UCI coordinate notation, e.g. e2e4, g1f3, "
+                "e1g1, e7e8q. Do not use SAN moves like e4, Nf3, O-O, or Qxc4."
+            ),
+        ]
+    )
+    template.add("Side to move: {side}.", side=side)
+    template.add("Current FEN: {fen}", fen=board.fen())
+    template.add(
+        "SAN history: {san_history}",
+        san_history=" ".join(san_history) if san_history else "(start position)",
+    )
+    template.add(
+        "Your prior moves: {own_moves}",
+        own_moves=(
+            ", ".join(f"{san}/{uci}" for san, uci in own_moves) if own_moves else "(none)"
         ),
-        (
-            "Among the legal moves, choose the strongest one: develop your pieces, "
-            "fight for the center, keep your own king safe, and never give away "
-            "material for free."
-        ),
-        (
-            "Before committing, look for checks, captures and threats — both your own "
-            "tactical chances and the opponent's threats against you."
-        ),
-        (
-            "Return only strict JSON in this exact shape: "
-            "{\"move\":\"e2e4\",\"rationale\":\"short reason\","
-            "\"strategy_update\":{\"objective\":\"short updated plan\"}}."
-            if strategic_memory is not None
-            else "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}."
-        ),
-        (
-            "The move value must be UCI coordinate notation, e.g. e2e4, g1f3, "
-            "e1g1, e7e8q. Do not use SAN moves like e4, Nf3, O-O, or Qxc4."
-        ),
-        f"Side to move: {side}.",
-        f"Current FEN: {board.fen()}",
-        f"SAN history: {' '.join(san_history) if san_history else '(start position)'}",
-        "Your prior moves: "
-        + (
-            ", ".join(f"{san}/{uci}" for san, uci in own_moves)
-            if own_moves
-            else "(none)"
-        ),
-        f"Last opponent move: {last_opponent_move or '(none)'}",
-    ]
+    )
+    template.add(
+        "Last opponent move: {last_opponent_move}",
+        last_opponent_move=last_opponent_move or "(none)",
+    )
     if include_ascii_board:
-        parts.append(f"ASCII board:\n{board}")
+        template.add("ASCII board:\n{ascii_board}", ascii_board=board)
     if strategic_memory is not None:
-        parts.extend(
-            [
-                "Your private strategic memory:",
-                f"- Objective: {strategic_memory.get('objective', '(none)')}",
-                f"- Opponent threats: {strategic_memory.get('opponent_threats', '(none)')}",
-                f"- Pieces to improve: {strategic_memory.get('pieces_to_improve', '(none)')}",
-                f"- Avoid: {strategic_memory.get('avoid', '(none)')}",
-                f"- Last own move rationale: {strategic_memory.get('last_rationale', '(none)')}",
-                "Update this memory after choosing a move. Keep each field short and concrete.",
-            ]
+        template.add("Your private strategic memory:")
+        template.add(
+            "- Objective: {objective}",
+            objective=strategic_memory.get("objective", "(none)"),
+        )
+        template.add(
+            "- Opponent threats: {opponent_threats}",
+            opponent_threats=strategic_memory.get("opponent_threats", "(none)"),
+        )
+        template.add(
+            "- Pieces to improve: {pieces_to_improve}",
+            pieces_to_improve=strategic_memory.get("pieces_to_improve", "(none)"),
+        )
+        template.add("- Avoid: {avoid}", avoid=strategic_memory.get("avoid", "(none)"))
+        template.add(
+            "- Last own move rationale: {last_rationale}",
+            last_rationale=strategic_memory.get("last_rationale", "(none)"),
+        )
+        template.add(
+            "Update this memory after choosing a move. Keep each field short and concrete."
         )
     if repetition_warning is not None:
-        parts.append(f"Repetition warning: {repetition_warning}")
+        template.add(
+            "Repetition warning: {repetition_warning}",
+            repetition_warning=repetition_warning,
+        )
     if legality_mode == "constrained" or feedback is not None:
         legal_moves = sorted(move.uci() for move in board.legal_moves)
-        parts.extend(
+        template.extend(
             [
                 "Choose exactly one move from this legal move list.",
                 "Your move must exactly match one listed UCI move.",
                 "If strategic memory conflicts with the legal move list, ignore the memory.",
-                "Legal moves (UCI): " + ", ".join(legal_moves),
             ]
         )
+        template.add("Legal moves (UCI): {legal_moves}", legal_moves=", ".join(legal_moves))
     if feedback is not None:
-        parts.extend(
-            [
-                "Your previous response was invalid.",
-                f"Do not repeat this attempted move: {feedback.get('attempted_move') or '(none)'}.",
-                "Choose a different move that exactly appears in the legal move list.",
-            ]
+        template.add("Your previous response was invalid.")
+        template.add(
+            "Do not repeat this attempted move: {attempted_move}.",
+            attempted_move=feedback.get("attempted_move") or "(none)",
         )
-        parts.append(f"Previous attempt feedback: {feedback}")
-    text = "\n".join(parts)
-    skeleton = _strict_template_skeleton(
-        legality_mode=legality_mode,
-        has_feedback=feedback is not None,
-        has_strategic_memory=strategic_memory is not None,
-        has_repetition_warning=repetition_warning is not None,
-        include_ascii_board=include_ascii_board,
-    )
+        template.add("Choose a different move that exactly appears in the legal move list.")
+        template.add("Previous attempt feedback: {feedback}", feedback=feedback)
     return BuiltPrompt(
         version=version,
         mode="strict",
         legality_mode=legality_mode,
-        text=text,
-        template_hash=template_hash(skeleton),
+        text=template.rendered(),
+        template_hash=template_hash(template.skeleton()),
     )
 
 
@@ -136,109 +169,26 @@ def build_reasoning_prompt(
     legality_mode: LegalityMode,
     version: str = "reasoning-v1",
 ) -> BuiltPrompt:
-    parts = [
-        "Annotate an already-scored strict chess move.",
-        "Do not propose a different move.",
-        f"Persona: {persona}.",
-        f"FEN before move: {fen_before}",
-        f"Accepted move: {accepted_san} / {accepted_uci}",
-        f"Engine classification: {evaluation_label}",
-        "Return concise commentary for a match report.",
-    ]
-    text = "\n".join(parts)
+    template = _PromptTemplate(rendered_parts=[], skeleton_parts=[])
+    template.extend(
+        [
+            "Annotate an already-scored strict chess move.",
+            "Do not propose a different move.",
+        ]
+    )
+    template.add("Persona: {persona}.", persona=persona)
+    template.add("FEN before move: {fen_before}", fen_before=fen_before)
+    template.add(
+        "Accepted move: {accepted_san} / {accepted_uci}",
+        accepted_san=accepted_san,
+        accepted_uci=accepted_uci,
+    )
+    template.add("Engine classification: {evaluation_label}", evaluation_label=evaluation_label)
+    template.add("Return concise commentary for a match report.")
     return BuiltPrompt(
         version=version,
         mode="reasoning",
         legality_mode=legality_mode,
-        text=text,
-        template_hash=template_hash(
-            "\n".join(
-                [
-                    "Annotate an already-scored strict chess move.",
-                    "Do not propose a different move.",
-                    "Persona: {persona}.",
-                    "FEN before move: {fen_before}",
-                    "Accepted move: {accepted_san} / {accepted_uci}",
-                    "Engine classification: {evaluation_label}",
-                    "Return concise commentary for a match report.",
-                ]
-            )
-        ),
+        text=template.rendered(),
+        template_hash=template_hash(template.skeleton()),
     )
-
-
-def _strict_template_skeleton(
-    *,
-    legality_mode: LegalityMode,
-    has_feedback: bool,
-    has_strategic_memory: bool,
-    has_repetition_warning: bool,
-    include_ascii_board: bool,
-) -> str:
-    parts = [
-        "You are playing a competitive chess game and your goal is to win.",
-        (
-            "Win by checkmating the opponent's king; if a win is out of reach, "
-            "play for a draw rather than a loss."
-        ),
-        (
-            "Among the legal moves, choose the strongest one: develop your pieces, "
-            "fight for the center, keep your own king safe, and never give away "
-            "material for free."
-        ),
-        (
-            "Before committing, look for checks, captures and threats — both your own "
-            "tactical chances and the opponent's threats against you."
-        ),
-        (
-            "Return only strict JSON in this exact shape: "
-            "{\"move\":\"e2e4\",\"rationale\":\"short reason\","
-            "\"strategy_update\":{\"objective\":\"short updated plan\"}}."
-            if has_strategic_memory
-            else "Return only strict JSON in this exact shape: {\"move\":\"e2e4\"}."
-        ),
-        (
-            "The move value must be UCI coordinate notation, e.g. e2e4, g1f3, "
-            "e1g1, e7e8q. Do not use SAN moves like e4, Nf3, O-O, or Qxc4."
-        ),
-        "Side to move: {side}.",
-        "Current FEN: {fen}",
-        "SAN history: {san_history}",
-        "Your prior moves: {own_moves}",
-        "Last opponent move: {last_opponent_move}",
-    ]
-    if include_ascii_board:
-        parts.append("ASCII board:\n{ascii_board}")
-    if has_strategic_memory:
-        parts.extend(
-            [
-                "Your private strategic memory:",
-                "- Objective: {objective}",
-                "- Opponent threats: {opponent_threats}",
-                "- Pieces to improve: {pieces_to_improve}",
-                "- Avoid: {avoid}",
-                "- Last own move rationale: {last_rationale}",
-                "Update this memory after choosing a move. Keep each field short and concrete.",
-            ]
-        )
-    if has_repetition_warning:
-        parts.append("Repetition warning: {repetition_warning}")
-    if legality_mode == "constrained" or has_feedback:
-        parts.extend(
-            [
-                "Choose exactly one move from this legal move list.",
-                "Your move must exactly match one listed UCI move.",
-                "If strategic memory conflicts with the legal move list, ignore the memory.",
-                "Legal moves (UCI): {legal_moves}",
-            ]
-        )
-    if has_feedback:
-        parts.extend(
-            [
-                "Your previous response was invalid.",
-                "Do not repeat this attempted move: {attempted_move}.",
-                "Choose a different move that exactly appears in the legal move list.",
-                "Previous attempt feedback: {feedback}",
-            ]
-        )
-    return "\n".join(parts)

@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from arena_core.persistence import models
+from arena_core.stats import wilson_interval
 
 
 @dataclass
@@ -176,14 +177,14 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
         illegal_attempts=bucket.illegal_attempts,
         malformed_attempts=bucket.malformed_attempts,
         illegal_rate=_rate(bucket.illegal_attempts, bucket.attempts),
-        illegal_rate_ci_low=_wilson_interval(bucket.illegal_attempts, bucket.attempts)[0],
-        illegal_rate_ci_high=_wilson_interval(bucket.illegal_attempts, bucket.attempts)[1],
+        illegal_rate_ci_low=wilson_interval(bucket.illegal_attempts, bucket.attempts)[0],
+        illegal_rate_ci_high=wilson_interval(bucket.illegal_attempts, bucket.attempts)[1],
         malformed_rate=_rate(bucket.malformed_attempts, bucket.attempts),
-        malformed_rate_ci_low=_wilson_interval(bucket.malformed_attempts, bucket.attempts)[0],
-        malformed_rate_ci_high=_wilson_interval(bucket.malformed_attempts, bucket.attempts)[1],
+        malformed_rate_ci_low=wilson_interval(bucket.malformed_attempts, bucket.attempts)[0],
+        malformed_rate_ci_high=wilson_interval(bucket.malformed_attempts, bucket.attempts)[1],
         win_rate=_rate(bucket.wins, bucket.games_played),
-        win_rate_ci_low=_wilson_interval(bucket.wins, bucket.games_played)[0],
-        win_rate_ci_high=_wilson_interval(bucket.wins, bucket.games_played)[1],
+        win_rate_ci_low=wilson_interval(bucket.wins, bucket.games_played)[0],
+        win_rate_ci_high=wilson_interval(bucket.wins, bucket.games_played)[1],
         low_sample=bucket.games_played < 10,
         avg_retries=_avg(bucket.retries) or 0.0,
         forfeit_invalid_count=bucket.forfeit_invalid_count,
@@ -218,23 +219,3 @@ def _rate(count: int, total: int) -> float:
     if total == 0:
         return 0.0
     return count / total
-
-
-def _wilson_interval(
-    successes: int,
-    total: int,
-    *,
-    z: float = 1.959963984540054,
-) -> tuple[float, float]:
-    if total == 0:
-        return 0.0, 0.0
-    proportion = successes / total
-    z2 = z * z
-    denominator = 1 + z2 / total
-    center = (proportion + z2 / (2 * total)) / denominator
-    margin = (
-        z
-        * ((proportion * (1 - proportion) + z2 / (4 * total)) / total) ** 0.5
-        / denominator
-    )
-    return max(0.0, center - margin), min(1.0, center + margin)

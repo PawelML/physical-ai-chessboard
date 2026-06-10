@@ -38,6 +38,7 @@ from arena_core.persistence.models import (
     TokenUsage,
 )
 from arena_core.reports import export_game_report
+from arena_core.stats import wilson_interval
 from arena_core.tournaments import TournamentConfig, run_tournament
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
@@ -1769,12 +1770,12 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
     attempt_count = sum(row.attempt_count for row in rows)
     illegal_attempts = sum(row.illegal_attempts for row in rows)
     malformed_attempts = sum(row.malformed_attempts for row in rows)
-    win_rate_ci_low, win_rate_ci_high = _wilson_interval(wins, games_played)
-    illegal_rate_ci_low, illegal_rate_ci_high = _wilson_interval(
+    win_rate_ci_low, win_rate_ci_high = wilson_interval(wins, games_played)
+    illegal_rate_ci_low, illegal_rate_ci_high = wilson_interval(
         illegal_attempts,
         attempt_count,
     )
-    malformed_rate_ci_low, malformed_rate_ci_high = _wilson_interval(
+    malformed_rate_ci_low, malformed_rate_ci_high = wilson_interval(
         malformed_attempts,
         attempt_count,
     )
@@ -1826,26 +1827,6 @@ def _weighted_nullable_average(values: list[tuple[float | None, int]]) -> float 
     if not known:
         return None
     return _weighted_average([(value, weight) for value, weight in known])
-
-
-def _wilson_interval(
-    successes: int,
-    total: int,
-    *,
-    z: float = 1.959963984540054,
-) -> tuple[float, float]:
-    if total == 0:
-        return 0.0, 0.0
-    proportion = successes / total
-    z2 = z * z
-    denominator = 1 + z2 / total
-    center = (proportion + z2 / (2 * total)) / denominator
-    margin = (
-        z
-        * ((proportion * (1 - proportion) + z2 / (4 * total)) / total) ** 0.5
-        / denominator
-    )
-    return max(0.0, center - margin), min(1.0, center + margin)
 
 
 def _pgn_header(pgn: str | None, tag: str) -> str | None:
