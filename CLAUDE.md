@@ -43,8 +43,12 @@ ruff check .                       # rules E,F,I,UP,B,ASYNC; 100-char lines
 mypy arena_core backend tests      # strict mode
 pytest -q                          # asyncio_mode=auto; markers: unit, integration
 pytest tests/test_game_loop.py::test_name   # single test
-cd frontend && npm run lint && npm run build
+cd frontend && npm run lint && npm run build   # CI uses `npm ci` for installs
 ```
+
+Background design docs live in `docs/` (architecture, data-model, evals,
+move-loop-and-prompts) and roadmap in `plans/`; `demo/arena-demo.db` is a
+pre-populated sample DB.
 
 Alembic migrations live in `alembic/versions/`; the env reads `-x db_url=...` or
 `sqlalchemy.url`. `init-db` calls `create_tables` directly (used in dev/tests);
@@ -62,13 +66,15 @@ arena_core/
                    RandomMoveSource, StaticMoveSource, LLMMoveSource, StockfishMoveSource.
                    play_human_move / _HumanApiMoveSource feed the interactive human mode.
   prompts.py       versioned templates, {strict,reasoning} × {open,constrained} legality modes
-  parser.py        extract the move string (SAN or UCI) from raw model JSON
+  parser.py        extract the move string from raw model JSON (validated as UCI in engine)
   move_sources.py  source resolution helpers
   llm/             LLMService ABC -> LLMResponse; OpenAICompatible(Ollama), Anthropic, Gemini
   evaluators/      Stockfish UCI wrapper (fixed nodes, pinned binary) -> CPL, classification
   tournaments.py   pairings, run config + config_hash, writes benchmark_runs + children;
                    game_count + on_game_started/on_game_completed callbacks drive live matches
   leaderboards.py  rebuild_game_summaries (materialized aggregates)
+  stats.py         wilson_interval: confidence bounds on success-rate metrics
+                   (benchmark credibility), used by leaderboards + backend
   annotations.py   persona commentary over already-scored moves (NOT a scoring path)
   reports.py       per-game Markdown export
   telemetry.py     approximate token counts, context usage, latency, VRAM/offload detection
@@ -109,16 +115,23 @@ frontend/src/      App.tsx, api.ts, chess.ts (TanStack Query); replay, leaderboa
 - **Prompt versioning is mandatory.** Every template change bumps `prompt_version`
   (currently `strict-v7` in `config.py`) and `template_hash`, both stored per attempt.
   Comparisons across prompt versions must be explicit.
-- **Move contract is SAN, with UCI fallback.** The strict prompt asks for SAN
-  (`{"move":"e4"}`) and states the win objective; `engine._coerce_move` tries
-  `board.parse_san` first, then `chess.Move.from_uci`, so either format is accepted.
-  Legal-move lists (constrained mode + retry feedback) are SAN. `moves` always stores
-  both `accepted_san` and `accepted_uci` regardless of what the model emitted.
+- **Move contract is UCI-only** (since `strict-v7`; `strict-v6` had tried SAN). The
+  strict prompt asks for UCI coordinate notation (`{"move":"e2e4"}`), states the win
+  objective, and explicitly forbids SAN (`e4`, `Nf3`, `O-O`). `engine._parse_uci_move`
+  tries only `chess.Move.from_uci` — SAN is rejected as a parse failure (and that
+  failure is persisted, by design). Legal-move lists (constrained mode + retry
+  feedback) are UCI. The *displayed* game history is still SAN (`SAN history:`) for
+  readability, and `moves` always stores both `accepted_uci` and `accepted_san`. NOTE:
+  SAN-vs-UCI is a known methodology question — models are pretrained on SAN/PGN, so the
+  UCI contract likely handicaps them. Treat any switch back to SAN as an explicit,
+  versioned *experiment* (new `prompt_version`), never a silent contract change. See
+  `docs/improvement-analysis.md`.
 - **Leaderboard rows key on an immutable `model_snapshot`**, never a display name —
   the snapshot fingerprints quantization, context window, sampler params, runtime
   version. Aggregates live in `game_summaries`; rebuild via `rebuild-summaries` after
   changing scoring. The UI only reads aggregates; scoring lives in
-  `evaluators` + `tournaments`.
+  `evaluators` + `tournaments`. Success-rate metrics carry Wilson confidence bounds
+  (`stats.wilson_interval`) — never present a rate without its sample size.
 - **Token counts are approximate** across heterogeneous local models — never present
   as exact. Stockfish mate scores are kept separate from centipawns.
 
