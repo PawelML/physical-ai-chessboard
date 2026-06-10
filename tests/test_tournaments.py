@@ -59,8 +59,8 @@ async def test_tournament_persists_run_openings_and_both_colors(tmp_path: Path) 
     assert run is not None
     assert len(result.config_hash) == 64
     assert participant_count == 2
-    assert opening_count == 2
-    assert len(games) == 4
+    assert opening_count == 10
+    assert len(games) == 20
     assert {game.white_participant_id for game in games} == {
         games[0].white_participant_id,
         games[1].white_participant_id,
@@ -101,6 +101,49 @@ async def test_tournament_can_limit_exact_game_count(tmp_path: Path) -> None:
     assert len(result.game_ids) == 3
     assert len(games) == 3
     assert len({game.opening_line_id for game in games}) == 2
+
+
+@pytest.mark.integration
+async def test_tournament_seed_makes_random_games_deterministic(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+    config = TournamentConfig(
+        name="deterministic",
+        competitor_a="random",
+        competitor_b="random",
+        max_plies=4,
+        game_count=4,
+        seed=42,
+    )
+
+    async with session_factory() as session:
+        async with session.begin():
+            first = await run_tournament(
+                session=session,
+                config=config,
+                settings=Settings(max_retries=0),
+                source_factory=lambda _name, rng: RandomMoveSource(rng=rng),
+            )
+            second = await run_tournament(
+                session=session,
+                config=config,
+                settings=Settings(max_retries=0),
+                source_factory=lambda _name, rng: RandomMoveSource(rng=rng),
+            )
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Game.run_id, Game.pgn)
+                .where(Game.run_id.in_([first.run_id, second.run_id]))
+                .order_by(Game.run_id, Game.id)
+            )
+        ).all()
+
+    first_pgns = [pgn for run_id, pgn in rows if run_id == first.run_id]
+    second_pgns = [pgn for run_id, pgn in rows if run_id == second.run_id]
+    assert first_pgns == second_pgns
 
 
 @pytest.mark.integration
@@ -289,7 +332,15 @@ async def test_tournament_captures_ollama_model_snapshot_metadata(
                     competitor_b="gemma3n:e4b",
                     max_plies=0,
                 ),
-                settings=Settings(max_retries=0),
+                settings=Settings(
+                    max_retries=0,
+                    ollama_temperature=0.2,
+                    ollama_top_p=0.9,
+                    ollama_num_ctx=32768,
+                    ollama_num_predict=256,
+                    ollama_num_gpu=32,
+                    ollama_think="auto",
+                ),
                 source_factory=lambda _name: RandomMoveSource(),
             )
 
@@ -313,9 +364,19 @@ async def test_tournament_captures_ollama_model_snapshot_metadata(
         assert model.param_size == "9.7B"
         assert snapshot.ollama_digest == f"digest-{model.name}"
         assert snapshot.quantization == "Q4_K_M"
-        assert snapshot.context_window == 262144
+        assert snapshot.context_window == 32768
         assert snapshot.runtime_version == "0.17.7"
-        assert snapshot.sampler_params == {"temperature": 0, "format": "json", "think": False}
+        assert snapshot.sampler_params == {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "num_ctx": 32768,
+            "num_predict": 256,
+            "num_gpu": 32,
+            "cpu_offload_gpu_layers": 48,
+            "cpu_offload_min_gpu_layers": 8,
+            "format": "json",
+            "think": "auto",
+        }
 
 
 @pytest.mark.integration
@@ -344,10 +405,12 @@ async def test_rebuild_game_summaries_materializes_leaderboard_rows(tmp_path: Pa
 
     assert row_count == 4
     assert len(summaries) == 4
-    assert sum(summary.games_played for summary in summaries) == 8
-    assert {summary.games_played for summary in summaries} == {2}
-    assert {summary.unfinished for summary in summaries} == {2}
+    assert sum(summary.games_played for summary in summaries) == 40
+    assert {summary.games_played for summary in summaries} == {10}
+    assert {summary.unfinished for summary in summaries} == {10}
     assert {summary.avg_game_plies for summary in summaries} == {1.0}
     assert all(summary.draws == 0 for summary in summaries)
     assert all(summary.legality_mode == "open" for summary in summaries)
+    assert all(summary.low_sample is False for summary in summaries)
+    assert all(summary.attempt_count >= 0 for summary in summaries)
     assert sum(summary.total_tokens for summary in summaries) > 0

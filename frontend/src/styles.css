@@ -582,9 +582,9 @@ h4 {
 .comparison-head,
 .comparison-row {
   display: grid;
-  grid-template-columns: 60px 70px 90px 80px 90px 90px 90px 110px 90px;
+  grid-template-columns: 60px 70px 90px 150px 80px 100px 90px 160px 90px 110px 90px;
   gap: 10px;
-  min-width: 850px;
+  min-width: 1210px;
   align-items: center;
 }
 
@@ -654,9 +654,11 @@ h4 {
 .leaderboard-head,
 .leaderboard-row {
   display: grid;
-  grid-template-columns: 54px minmax(120px, 1.2fr) 130px 80px 80px 80px 80px 90px 80px 80px 90px;
+  grid-template-columns:
+    54px minmax(120px, 1.2fr) 130px 80px 80px 90px 150px 80px 100px 90px 160px 80px
+    90px;
   gap: 10px;
-  min-width: 1010px;
+  min-width: 1360px;
   align-items: center;
 }
 

@@ -158,12 +158,14 @@ async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
     assert runs_response.status_code == 200
     assert runs_response.json()[0]["id"] == result.run_id
     assert games_response.status_code == 200
-    assert len(games_response.json()) == 4
+    assert len(games_response.json()) == 20
     assert {game["run_id"] for game in games_response.json()} == {result.run_id}
     assert leaderboard_response.status_code == 200
     assert len(leaderboard_response.json()) == 4
     assert leaderboard_response.json()[0]["games_played"] >= 1
     assert leaderboard_response.json()[0]["avg_game_plies"] == 1.0
+    assert "win_rate_ci_low" in leaderboard_response.json()[0]
+    assert "illegal_rate_ci_high" in leaderboard_response.json()[0]
     assert white_leaderboard_response.status_code == 200
     assert {row["color"] for row in white_leaderboard_response.json()} == {"white"}
     assert events_response.status_code == 200
@@ -171,6 +173,7 @@ async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
     assert comparison_response.status_code == 200
     assert comparison_response.json()[0]["run_id"] == result.run_id
     assert comparison_response.json()[0]["avg_game_plies"] == 1.0
+    assert "accuracy_rate" in comparison_response.json()[0]
 
 
 async def test_backend_builds_game_stream_snapshots(tmp_path: Path) -> None:

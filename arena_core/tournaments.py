@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from hashlib import sha256
-from inspect import isawaitable
+from inspect import Parameter, isawaitable, signature
 
 import chess
 from sqlalchemy import select
@@ -19,7 +19,7 @@ from arena_core.persistence.repositories import ensure_prompt
 from arena_core.prompts import LegalityMode, build_strict_prompt
 from arena_core.telemetry import estimate_pair_footprint
 
-SourceFactory = Callable[[str], MoveSource]
+SourceFactory = Callable[..., MoveSource]
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,14 @@ class TournamentResult:
 STARTER_OPENINGS = [
     OpeningSpec("C20", "King Pawn", "e2e4 e7e5", "starter-king-pawn"),
     OpeningSpec("D00", "Queen Pawn", "d2d4 d7d5", "starter-queen-pawn"),
+    OpeningSpec("C50", "Italian Game", "e2e4 e7e5 g1f3 b8c6 f1c4", "starter-italian"),
+    OpeningSpec("C60", "Ruy Lopez", "e2e4 e7e5 g1f3 b8c6 f1b5", "starter-ruy-lopez"),
+    OpeningSpec("B20", "Sicilian Defense", "e2e4 c7c5", "starter-sicilian"),
+    OpeningSpec("B01", "Scandinavian Defense", "e2e4 d7d5", "starter-scandinavian"),
+    OpeningSpec("C10", "French Defense", "e2e4 e7e6 d2d4 d7d5", "starter-french"),
+    OpeningSpec("B10", "Caro-Kann Defense", "e2e4 c7c6 d2d4 d7d5", "starter-caro-kann"),
+    OpeningSpec("D10", "Queen's Gambit", "d2d4 d7d5 c2c4", "starter-queens-gambit"),
+    OpeningSpec("E10", "Indian Game", "d2d4 g8f6 c2c4 e7e6", "starter-indian"),
 ]
 
 
@@ -68,7 +76,6 @@ async def run_tournament(
     on_game_started: Callable[[int, int], Awaitable[None] | None] | None = None,
     on_game_completed: Callable[[int, int], Awaitable[None] | None] | None = None,
 ) -> TournamentResult:
-    random.seed(config.seed)
     suite, opening_lines = await ensure_opening_suite(
         session,
         name=config.suite_name,
@@ -81,6 +88,7 @@ async def run_tournament(
         own_moves=[],
         last_opponent_move=None,
         legality_mode=config.legality_mode,
+        strategic_memory=_initial_prompt_memory() if config.strategic_memory else None,
         version=settings.prompt_version,
     )
     prompt_row = await ensure_prompt(session, prompt)
@@ -136,16 +144,25 @@ async def run_tournament(
 
     game_ids: list[int] = []
     try:
-        for line, white_name, black_name, white_participant, black_participant in _game_schedule(
-            opening_lines=opening_lines,
-            competitor_a=config.competitor_a,
-            competitor_b=config.competitor_b,
-            participant_a=participant_a,
-            participant_b=participant_b,
-            game_count=config.game_count,
+        for game_index, (
+            line,
+            white_name,
+            black_name,
+            white_participant,
+            black_participant,
+        ) in enumerate(
+            _game_schedule(
+                opening_lines=opening_lines,
+                competitor_a=config.competitor_a,
+                competitor_b=config.competitor_b,
+                participant_a=participant_a,
+                participant_b=participant_b,
+                game_count=config.game_count,
+            )
         ):
             board = board_from_move_sequence(line.move_sequence or "")
             game_number = len(game_ids) + 1
+            game_rng = random.Random(config.seed + game_index)
 
             async def mark_game_started(game_id: int, number: int = game_number) -> None:
                 if on_game_started is None:
@@ -155,8 +172,8 @@ async def run_tournament(
                     await callback_result
 
             result = await ArenaGame(
-                white=source_factory(white_name),
-                black=source_factory(black_name),
+                white=_source_from_factory(source_factory, white_name, game_rng),
+                black=_source_from_factory(source_factory, black_name, game_rng),
                 settings=settings,
                 legality_mode=config.legality_mode,
                 max_plies=config.max_plies,
@@ -336,6 +353,40 @@ def _game_schedule(
     return [pairings[index % len(pairings)] for index in range(game_count)]
 
 
+def _source_from_factory(
+    source_factory: SourceFactory,
+    source_name: str,
+    rng: random.Random,
+) -> MoveSource:
+    if _accepts_rng(source_factory):
+        return source_factory(source_name, rng)
+    return source_factory(source_name)
+
+
+def _accepts_rng(source_factory: SourceFactory) -> bool:
+    try:
+        parameters = signature(source_factory).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = {
+        Parameter.POSITIONAL_ONLY,
+        Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    return any(parameter.kind is Parameter.VAR_POSITIONAL for parameter in parameters) or sum(
+        1 for parameter in parameters if parameter.kind in positional
+    ) >= 2
+
+
+def _initial_prompt_memory() -> dict[str, str]:
+    return {
+        "objective": "{objective}",
+        "opponent_threats": "{opponent_threats}",
+        "pieces_to_improve": "{pieces_to_improve}",
+        "avoid": "{avoid}",
+        "last_rationale": "{last_rationale}",
+    }
+
+
 async def _create_participant(
     session: AsyncSession,
     *,
@@ -368,8 +419,11 @@ async def _create_participant(
             model_id=model.id,
             ollama_digest=model_metadata.digest if model_metadata else None,
             quantization=model_metadata.quantization if model_metadata else None,
-            context_window=model_metadata.context_window if model_metadata else None,
-            sampler_params=_ollama_sampler_params(),
+            context_window=(
+                settings.ollama_num_ctx
+                or (model_metadata.context_window if model_metadata else None)
+            ),
+            sampler_params=_ollama_sampler_params(settings),
             runtime_version=model_metadata.runtime_version if model_metadata else None,
         )
         session.add(snapshot)
@@ -403,7 +457,7 @@ def _config_payload(
         "name": config.name,
         "competitors": [config.competitor_a, config.competitor_b],
         "model_snapshots": {
-            source_name: _model_metadata_payload(metadata)
+            source_name: _model_metadata_payload(metadata, settings=settings)
             for source_name, metadata in model_metadata.items()
         },
         "legality_mode": config.legality_mode,
@@ -438,23 +492,37 @@ async def _model_metadata_for_sources(
     return metadata
 
 
-def _model_metadata_payload(metadata: OllamaModelMetadata) -> dict[str, object]:
+def _model_metadata_payload(
+    metadata: OllamaModelMetadata,
+    *,
+    settings: Settings,
+) -> dict[str, object]:
     return {
         "name": metadata.name,
         "digest": metadata.digest,
         "family": metadata.family,
         "parameter_size": metadata.parameter_size,
         "quantization": metadata.quantization,
-        "context_window": metadata.context_window,
+        "context_window": settings.ollama_num_ctx or metadata.context_window,
         "runtime_version": metadata.runtime_version,
         "modified_at": metadata.modified_at,
         "size_bytes": metadata.size_bytes,
-        "sampler_params": _ollama_sampler_params(),
+        "sampler_params": _ollama_sampler_params(settings),
     }
 
 
-def _ollama_sampler_params() -> dict[str, object]:
-    return {"temperature": 0, "format": "json", "think": False}
+def _ollama_sampler_params(settings: Settings) -> dict[str, object]:
+    return {
+        "temperature": settings.ollama_temperature,
+        "top_p": settings.ollama_top_p,
+        "num_ctx": settings.ollama_num_ctx,
+        "num_predict": settings.ollama_num_predict,
+        "num_gpu": settings.ollama_num_gpu,
+        "cpu_offload_gpu_layers": settings.ollama_cpu_offload_gpu_layers,
+        "cpu_offload_min_gpu_layers": settings.ollama_cpu_offload_min_gpu_layers,
+        "format": "json",
+        "think": settings.ollama_think,
+    }
 
 
 def _config_hash(payload: dict[str, object]) -> str:

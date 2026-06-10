@@ -773,9 +773,11 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
             <span>Run</span>
             <span>Games</span>
             <span>W-D-L-U</span>
+            <span>Win CI</span>
             <span>Moves</span>
+            <span>Accuracy</span>
             <span>Avg CPL</span>
-            <span>Illegal</span>
+            <span>Illegal CI</span>
             <span>Retries</span>
             <span>Latency</span>
             <span>Tokens</span>
@@ -787,9 +789,13 @@ function RunComparison({ rows }: { rows: RunComparisonRow[] }) {
               <span>
                 {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
+              <span>{rateWithCi(row.win_rate, row.win_rate_ci_low, row.win_rate_ci_high)}</span>
               <span>{movesLabel(row.avg_game_plies)}</span>
+              <span>{sampleRate(row.accuracy_rate, row.evaluated_move_count)}</span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
-              <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
+              <span>
+                {rateWithCi(row.illegal_rate, row.illegal_rate_ci_low, row.illegal_rate_ci_high)}
+              </span>
               <span>{row.avg_retries.toFixed(2)}</span>
               <span>{row.avg_latency_ms.toFixed(1)} ms</span>
               <span>{row.total_tokens}</span>
@@ -2466,9 +2472,11 @@ function Leaderboard({
             <span>Color</span>
             <span>W-D-L-U</span>
             <span>Score</span>
+            <span>Win CI</span>
             <span>Moves</span>
+            <span>Accuracy</span>
             <span>Avg CPL</span>
-            <span>Illegal</span>
+            <span>Illegal CI</span>
             <span>Retries</span>
             <span>Tokens</span>
           </div>
@@ -2483,10 +2491,17 @@ function Leaderboard({
               <span>
                 {row.wins}-{row.draws}-{row.losses}-{row.unfinished}
               </span>
-              <span>{scorePercent(row)}</span>
+              <span>
+                {scorePercent(row)}
+                {row.low_sample ? " n<10" : ""}
+              </span>
+              <span>{rateWithCi(row.win_rate, row.win_rate_ci_low, row.win_rate_ci_high)}</span>
               <span>{movesLabel(row.avg_game_plies)}</span>
+              <span>{sampleRate(row.accuracy_rate, row.evaluated_move_count)}</span>
               <span>{row.avg_cpl === null ? "—" : row.avg_cpl.toFixed(1)}</span>
-              <span>{(row.illegal_rate * 100).toFixed(1)}%</span>
+              <span>
+                {rateWithCi(row.illegal_rate, row.illegal_rate_ci_low, row.illegal_rate_ci_high)}
+              </span>
               <span>{row.avg_retries.toFixed(2)}</span>
               <span>{row.total_tokens}</span>
             </div>
@@ -2502,6 +2517,21 @@ function scorePercent(row: { games_played: number; wins: number; draws: number }
     return "—";
   }
   return `${(((row.wins + row.draws * 0.5) / row.games_played) * 100).toFixed(1)}%`;
+}
+
+function rateWithCi(value: number, low: number, high: number) {
+  return `${percent(value)} (${percent(low)}-${percent(high)})`;
+}
+
+function sampleRate(value: number, sampleSize: number) {
+  if (sampleSize === 0) {
+    return "—";
+  }
+  return `${percent(value)} n=${sampleSize}`;
+}
+
+function percent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function movesLabel(avgGamePlies: number) {

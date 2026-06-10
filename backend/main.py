@@ -314,11 +314,24 @@ class LeaderboardRow(BaseModel):
     unfinished: int
     avg_game_plies: float
     avg_cpl: float | None
+    evaluated_move_count: int
+    accuracy_rate: float
     blunders: int
     mistakes: int
     inaccuracies: int
+    attempt_count: int
+    illegal_attempts: int
+    malformed_attempts: int
     illegal_rate: float
+    illegal_rate_ci_low: float
+    illegal_rate_ci_high: float
     malformed_rate: float
+    malformed_rate_ci_low: float
+    malformed_rate_ci_high: float
+    win_rate: float
+    win_rate_ci_low: float
+    win_rate_ci_high: float
+    low_sample: bool
     avg_retries: float
     forfeit_invalid_count: int
     avg_latency_ms: float
@@ -344,8 +357,21 @@ class RunComparisonRow(BaseModel):
     unfinished: int
     avg_game_plies: float
     avg_cpl: float | None
+    evaluated_move_count: int
+    accuracy_rate: float
+    attempt_count: int
+    illegal_attempts: int
+    malformed_attempts: int
     illegal_rate: float
+    illegal_rate_ci_low: float
+    illegal_rate_ci_high: float
     malformed_rate: float
+    malformed_rate_ci_low: float
+    malformed_rate_ci_high: float
+    win_rate: float
+    win_rate_ci_low: float
+    win_rate_ci_high: float
+    low_sample: bool
     avg_retries: float
     avg_latency_ms: float
     total_tokens: int
@@ -871,11 +897,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     unfinished=summary.unfinished,
                     avg_game_plies=summary.avg_game_plies,
                     avg_cpl=summary.avg_cpl,
+                    evaluated_move_count=summary.evaluated_move_count,
+                    accuracy_rate=summary.accuracy_rate,
                     blunders=summary.blunders,
                     mistakes=summary.mistakes,
                     inaccuracies=summary.inaccuracies,
+                    attempt_count=summary.attempt_count,
+                    illegal_attempts=summary.illegal_attempts,
+                    malformed_attempts=summary.malformed_attempts,
                     illegal_rate=summary.illegal_rate,
+                    illegal_rate_ci_low=summary.illegal_rate_ci_low,
+                    illegal_rate_ci_high=summary.illegal_rate_ci_high,
                     malformed_rate=summary.malformed_rate,
+                    malformed_rate_ci_low=summary.malformed_rate_ci_low,
+                    malformed_rate_ci_high=summary.malformed_rate_ci_high,
+                    win_rate=summary.win_rate,
+                    win_rate_ci_low=summary.win_rate_ci_low,
+                    win_rate_ci_high=summary.win_rate_ci_high,
+                    low_sample=summary.low_sample,
                     avg_retries=summary.avg_retries,
                     forfeit_invalid_count=summary.forfeit_invalid_count,
                     avg_latency_ms=summary.avg_latency_ms,
@@ -1413,9 +1452,10 @@ async def _run_stockfish_match_job(
                     strategic_memory=guidance_mode == "strategic_memory",
                 ),
                 settings=stockfish_settings,
-                source_factory=lambda source_name: _source_from_name(
+                source_factory=lambda source_name, rng: _source_from_name(
                     source_name,
                     stockfish_settings,
+                    rng=rng,
                 ),
                 evaluator=evaluator,
                 commit_after_each_ply=True,
@@ -1725,6 +1765,19 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
     losses = sum(row.losses for row in rows)
     unfinished = sum(row.unfinished for row in rows)
     total_tokens = sum(row.total_tokens for row in rows)
+    evaluated_move_count = sum(row.evaluated_move_count for row in rows)
+    attempt_count = sum(row.attempt_count for row in rows)
+    illegal_attempts = sum(row.illegal_attempts for row in rows)
+    malformed_attempts = sum(row.malformed_attempts for row in rows)
+    win_rate_ci_low, win_rate_ci_high = _wilson_interval(wins, games_played)
+    illegal_rate_ci_low, illegal_rate_ci_high = _wilson_interval(
+        illegal_attempts,
+        attempt_count,
+    )
+    malformed_rate_ci_low, malformed_rate_ci_high = _wilson_interval(
+        malformed_attempts,
+        attempt_count,
+    )
     return RunComparisonRow(
         run_id=run_id,
         games_played=games_played,
@@ -1736,8 +1789,25 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
         avg_game_plies=_weighted_average(
             [(row.avg_game_plies, row.games_played) for row in rows]
         ),
-        illegal_rate=_weighted_average([(row.illegal_rate, row.games_played) for row in rows]),
-        malformed_rate=_weighted_average([(row.malformed_rate, row.games_played) for row in rows]),
+        evaluated_move_count=evaluated_move_count,
+        accuracy_rate=_weighted_average(
+            [(row.accuracy_rate, row.evaluated_move_count) for row in rows]
+        ),
+        attempt_count=attempt_count,
+        illegal_attempts=illegal_attempts,
+        malformed_attempts=malformed_attempts,
+        illegal_rate=_weighted_average([(row.illegal_rate, row.attempt_count) for row in rows]),
+        illegal_rate_ci_low=illegal_rate_ci_low,
+        illegal_rate_ci_high=illegal_rate_ci_high,
+        malformed_rate=_weighted_average(
+            [(row.malformed_rate, row.attempt_count) for row in rows]
+        ),
+        malformed_rate_ci_low=malformed_rate_ci_low,
+        malformed_rate_ci_high=malformed_rate_ci_high,
+        win_rate=wins / games_played if games_played else 0.0,
+        win_rate_ci_low=win_rate_ci_low,
+        win_rate_ci_high=win_rate_ci_high,
+        low_sample=games_played < 10,
         avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),
         avg_latency_ms=_weighted_average([(row.avg_latency_ms, row.games_played) for row in rows]),
         total_tokens=total_tokens,
@@ -1756,6 +1826,26 @@ def _weighted_nullable_average(values: list[tuple[float | None, int]]) -> float 
     if not known:
         return None
     return _weighted_average([(value, weight) for value, weight in known])
+
+
+def _wilson_interval(
+    successes: int,
+    total: int,
+    *,
+    z: float = 1.959963984540054,
+) -> tuple[float, float]:
+    if total == 0:
+        return 0.0, 0.0
+    proportion = successes / total
+    z2 = z * z
+    denominator = 1 + z2 / total
+    center = (proportion + z2 / (2 * total)) / denominator
+    margin = (
+        z
+        * ((proportion * (1 - proportion) + z2 / (4 * total)) / total) ** 0.5
+        / denominator
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
 
 
 def _pgn_header(pgn: str | None, tag: str) -> str | None:

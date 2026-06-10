@@ -86,5 +86,5 @@ async def test_real_stockfish_source_runs_tournament_game(tmp_path: Path) -> Non
         move_count = await session.scalar(select(func.count()).select_from(Move))
         summary_count = await session.scalar(select(func.count()).select_from(GameSummary))
 
-    assert move_count == 4
+    assert move_count == 20
     assert summary_count == 4

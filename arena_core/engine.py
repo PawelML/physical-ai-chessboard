@@ -38,9 +38,12 @@ class RandomMoveSource:
     name = "random"
     source_type = "random"
 
+    def __init__(self, *, rng: random.Random | None = None) -> None:
+        self._rng = rng or random.Random()
+
     async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
         started = time.perf_counter()
-        move = random.choice(list(board.legal_moves)).uci()
+        move = self._rng.choice(list(board.legal_moves)).uci()
         latency_ms = (time.perf_counter() - started) * 1000
         return MoveProposal(
             raw_response=f'{{"move":"{move}"}}',

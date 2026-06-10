@@ -20,6 +20,8 @@ class _Bucket:
     unfinished: int = 0
     game_plies: list[int] = field(default_factory=list)
     cpls: list[int] = field(default_factory=list)
+    evaluated_moves: int = 0
+    accurate_moves: int = 0
     blunders: int = 0
     mistakes: int = 0
     inaccuracies: int = 0
@@ -118,6 +120,9 @@ async def _accumulate_game(
             )
         ).scalars()
         for evaluation in evaluations:
+            bucket.evaluated_moves += 1
+            if evaluation.classification in {"best", "good"}:
+                bucket.accurate_moves += 1
             if evaluation.centipawn_loss is not None:
                 bucket.cpls.append(evaluation.centipawn_loss)
             if evaluation.classification == "blunder":
@@ -162,11 +167,24 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
         unfinished=bucket.unfinished,
         avg_game_plies=_avg(bucket.game_plies) or 0.0,
         avg_cpl=_avg(bucket.cpls),
+        evaluated_move_count=bucket.evaluated_moves,
+        accuracy_rate=_rate(bucket.accurate_moves, bucket.evaluated_moves),
         blunders=bucket.blunders,
         mistakes=bucket.mistakes,
         inaccuracies=bucket.inaccuracies,
+        attempt_count=bucket.attempts,
+        illegal_attempts=bucket.illegal_attempts,
+        malformed_attempts=bucket.malformed_attempts,
         illegal_rate=_rate(bucket.illegal_attempts, bucket.attempts),
+        illegal_rate_ci_low=_wilson_interval(bucket.illegal_attempts, bucket.attempts)[0],
+        illegal_rate_ci_high=_wilson_interval(bucket.illegal_attempts, bucket.attempts)[1],
         malformed_rate=_rate(bucket.malformed_attempts, bucket.attempts),
+        malformed_rate_ci_low=_wilson_interval(bucket.malformed_attempts, bucket.attempts)[0],
+        malformed_rate_ci_high=_wilson_interval(bucket.malformed_attempts, bucket.attempts)[1],
+        win_rate=_rate(bucket.wins, bucket.games_played),
+        win_rate_ci_low=_wilson_interval(bucket.wins, bucket.games_played)[0],
+        win_rate_ci_high=_wilson_interval(bucket.wins, bucket.games_played)[1],
+        low_sample=bucket.games_played < 10,
         avg_retries=_avg(bucket.retries) or 0.0,
         forfeit_invalid_count=bucket.forfeit_invalid_count,
         avg_latency_ms=_avg(bucket.latencies) or 0.0,
@@ -200,3 +218,23 @@ def _rate(count: int, total: int) -> float:
     if total == 0:
         return 0.0
     return count / total
+
+
+def _wilson_interval(
+    successes: int,
+    total: int,
+    *,
+    z: float = 1.959963984540054,
+) -> tuple[float, float]:
+    if total == 0:
+        return 0.0, 0.0
+    proportion = successes / total
+    z2 = z * z
+    denominator = 1 + z2 / total
+    center = (proportion + z2 / (2 * total)) / denominator
+    margin = (
+        z
+        * ((proportion * (1 - proportion) + z2 / (4 * total)) / total) ** 0.5
+        / denominator
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)

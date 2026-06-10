@@ -1,4 +1,5 @@
 import asyncio
+import random
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, cast
@@ -301,9 +302,10 @@ async def _tournament_async(
                     seed=seed,
                 ),
                 settings=effective_settings,
-                source_factory=lambda source_name: _source_from_name(
+                source_factory=lambda source_name, rng: _source_from_name(
                     source_name,
                     effective_settings,
+                    rng=rng,
                 ),
                 evaluator=evaluator,
             )
@@ -344,9 +346,14 @@ async def _export_report_async(db_url: str, game_id: int) -> str:
         return await export_game_report(session, game_id=game_id)
 
 
-def _source_from_name(name: str, settings: Settings) -> MoveSource:
+def _source_from_name(
+    name: str,
+    settings: Settings,
+    *,
+    rng: random.Random | None = None,
+) -> MoveSource:
     if name == "random":
-        return RandomMoveSource()
+        return RandomMoveSource(rng=rng)
     if name == "stockfish":
         if settings.stockfish_path is None:
             raise ValueError("stockfish source requires --stockfish-path or ARENA_STOCKFISH_PATH")
