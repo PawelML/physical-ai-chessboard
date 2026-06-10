@@ -2684,15 +2684,29 @@ function bestColumns(values: (number | null)[], direction: MetricDirection): Set
 function ModelComparison() {
   const [legality, setLegality] = useState<string>("constrained");
   const [color, setColor] = useState<string>("all");
+  // Track which models are hidden (by stable model_key) so newly-seen models
+  // default to visible. Empty set => show every model.
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
   const comparisonQuery = useQuery({
     queryKey: ["model-comparison", legality, color],
     queryFn: () => fetchModelComparison({ legalityMode: legality, color }),
   });
-  const rows = comparisonQuery.data ?? [];
+  const allRows = comparisonQuery.data ?? [];
+  const rows = allRows.filter((row) => !hidden.has(row.model_key));
   const hasLowSample = rows.some((row) => row.low_sample);
   const gridTemplate = {
     gridTemplateColumns: `minmax(180px, 220px) repeat(${rows.length}, minmax(120px, 1fr))`,
   };
+  const toggleModel = (key: string) =>
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
 
   return (
     <section className="model-comparison">
@@ -2723,16 +2737,48 @@ function ModelComparison() {
             <option value="white">White</option>
             <option value="black">Black</option>
           </select>
+          {allRows.length > 0 ? (
+            <details className="model-picker">
+              <summary>
+                Models ({allRows.length - hidden.size}/{allRows.length})
+              </summary>
+              <div className="model-picker-menu">
+                <div className="model-picker-actions">
+                  <button type="button" onClick={() => setHidden(new Set())}>
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHidden(new Set(allRows.map((row) => row.model_key)))}
+                  >
+                    None
+                  </button>
+                </div>
+                {allRows.map((row) => (
+                  <label key={row.model_key} className="model-picker-item">
+                    <input
+                      type="checkbox"
+                      checked={!hidden.has(row.model_key)}
+                      onChange={() => toggleModel(row.model_key)}
+                    />
+                    {row.label}
+                  </label>
+                ))}
+              </div>
+            </details>
+          ) : null}
         </div>
       </header>
 
       {comparisonQuery.isLoading ? (
         <p className="muted">Loading…</p>
-      ) : rows.length === 0 ? (
+      ) : allRows.length === 0 ? (
         <p className="muted">
           No materialized summaries yet for this mode. Play games, then run{" "}
           <code>arena rebuild-summaries</code> (Stockfish matches rebuild automatically).
         </p>
+      ) : rows.length === 0 ? (
+        <p className="muted">All models are hidden — pick at least one in the Models menu.</p>
       ) : (
         <div className="matrix-table">
           <div className="matrix-head" style={gridTemplate}>
