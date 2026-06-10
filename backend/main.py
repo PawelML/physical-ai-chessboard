@@ -890,6 +890,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 RunParticipant,
                 RunParticipant.id == GameSummary.run_participant_id,
             )
+            # Stockfish is an engine, not an LLM: exclude it from the model matrix so it
+            # doesn't dominate every metric. (random stays as a baseline floor.)
+            query = query.where(RunParticipant.opponent_type != "stockfish")
             if legality_mode is not None:
                 query = query.where(GameSummary.legality_mode == legality_mode)
             # "all" (or unset) means combine both colors; otherwise filter to one.
