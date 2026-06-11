@@ -32,12 +32,16 @@ backend = [
   "fastapi>=0.112.0",
   "uvicorn[standard]>=0.30.5",
 ]
+train = [
+  "datasets==5.0.0",
+  "unsloth==2025.11.1",
+]
 
 [project.scripts]
 arena = "arena_core.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["arena_core", "backend"]
+packages = ["arena_core", "backend", "finetune"]
 
 [tool.ruff]
 line-length = 100
