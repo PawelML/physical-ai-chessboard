@@ -47,6 +47,50 @@ python -m finetune.build_smoke_dataset \
 The examples are rendered with `arena_core.prompts.build_strict_prompt`; the
 training target is exactly `{"move":"<uci>"}`.
 
+## Build Phase 1 Dataset
+
+For real Lichess dumps, stream compressed PGN into the builder; do not extract
+monthly dumps to disk.
+
+```bash
+zstdcat path/to/lichess_db_standard_rated_YYYY-MM.pgn.zst \
+  | python scripts/build_finetune_dataset.py \
+      --pgn - \
+      --train-output data/finetune/lichess_2000_pilot.train.jsonl \
+      --val-output data/finetune/lichess_2000_pilot.val.jsonl \
+      --metadata-output data/finetune/lichess_2000_pilot.meta.json \
+      --max-examples 20000 \
+      --seed 0
+```
+
+Defaults match the Phase 1 plan:
+
+- rated games only;
+- blitz or slower;
+- both players at least 2000 Elo;
+- normal termination;
+- at least 20 plies;
+- up to 10 evenly-spaced positions per kept game;
+- train/val split by game, not by position;
+- 70% open prompts and 30% constrained prompts.
+
+Use `--max-examples 200000` for the first main dataset after the 20k pilot
+looks sane.
+
+## Evaluate Base Model on Held-Out Examples
+
+Before training, record the base model's parse/legal/top-1 metrics on the
+validation split.
+
+```bash
+python -m finetune.evaluate_baseline \
+  --dataset data/finetune/lichess_2000_pilot.val.jsonl \
+  --model qwen2.5:1.5b \
+  --output outputs/finetune/qwen25_15b_base_pilot_eval.json \
+  --predictions-output outputs/finetune/qwen25_15b_base_pilot_predictions.jsonl \
+  --limit 1000
+```
+
 ## Train Tiny LoRA
 
 This is intentionally short. It is meant to catch CUDA, tokenizer, chat-template,
