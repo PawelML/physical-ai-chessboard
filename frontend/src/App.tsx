@@ -1982,7 +1982,7 @@ function squareFromPoint(x: number, y: number): string | null {
 function promotionSymbol(move: string, color: "white" | "black") {
   const piece = move.at(-1) ?? "q";
   const symbols: Record<"white" | "black", Record<string, string>> = {
-    white: { q: "♕", r: "♖", b: "♗", n: "♘" },
+    white: { q: "♛", r: "♜", b: "♝", n: "♞" },
     black: { q: "♛", r: "♜", b: "♝", n: "♞" },
   };
   return symbols[color][piece] ?? symbols[color].q;

@@ -15,12 +15,12 @@ const pieceSymbols: Record<string, string> = {
   r: "♜",
   q: "♛",
   k: "♚",
-  P: "♙",
-  N: "♘",
-  B: "♗",
-  R: "♖",
-  Q: "♕",
-  K: "♔",
+  P: "♟",
+  N: "♞",
+  B: "♝",
+  R: "♜",
+  Q: "♛",
+  K: "♚",
 };
 
 export const startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
