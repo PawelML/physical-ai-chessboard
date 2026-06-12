@@ -16,6 +16,8 @@ This repository contains a software LLM chess arena. Core Python logic lives in 
 - `bash scripts/install_stockfish.sh`: install the pinned local Stockfish package under `vendor/stockfish/` without sudo.
 - `ARENA_DATABASE_URL=sqlite+aiosqlite:///./arena.db uvicorn backend.main:app --reload`: run the API locally.
 - `cd frontend && npm install && npm run dev`: start the Vite UI.
+- Preferred local app URL for this machine: `http://192.168.10.73:5173/`.
+  Start Vite on `0.0.0.0`/port `5173` so the UI is reachable from the LAN.
 - `pytest`: run Python tests.
 - `ruff check backend arena_core tests`: lint Python code.
 - `ruff check backend arena_core finetune tests`: lint Python code including fine-tuning utilities.

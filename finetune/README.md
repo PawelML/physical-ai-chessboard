@@ -128,3 +128,52 @@ python -m finetune.train_lora \
 
 The script stores `train_config.json` next to the LoRA adapter. It uses the
 model tokenizer's own chat template and masks loss to assistant responses only.
+
+## Phase 4 Export to GGUF and Ollama
+
+Export the trained Qwen3.5 9B pilot adapter, write Ollama Modelfiles, and
+optionally create the local Ollama models:
+
+```bash
+python -m finetune.export_ollama \
+  --adapter-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_lora \
+  --output-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf \
+  --model-name chess-ft-qwen35-9b-pilot \
+  --create-ollama
+```
+
+The default quantizations are `q4_k_m` and `q8_0`. If the GGUF files already
+exist and only the Ollama import should be repeated, use:
+
+```bash
+python -m finetune.export_ollama \
+  --skip-export \
+  --output-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf \
+  --model-name chess-ft-qwen35-9b-pilot \
+  --create-ollama
+```
+
+The generated Ollama models are named from the quantization suffix:
+
+```text
+chess-ft-qwen35-9b-pilot-q4_k_m
+chess-ft-qwen35-9b-pilot-q8_0
+```
+
+Run a held-out sanity check through Ollama before arena benchmarking:
+
+```bash
+python -m finetune.evaluate_baseline \
+  --dataset data/finetune/lichess_2000_2013-12_pilot.val.jsonl \
+  --model chess-ft-qwen35-9b-pilot-q8_0 \
+  --limit 100 \
+  --timeout-seconds 300 \
+  --num-ctx 4096 \
+  --num-predict 24 \
+  --think off \
+  --progress-every 20
+```
+
+The Modelfile template intentionally wraps the raw arena prompt in the Qwen3.5
+chat format used during training and emits the empty thinking block expected
+when `enable_thinking=False`.
