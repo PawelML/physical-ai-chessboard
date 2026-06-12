@@ -33,8 +33,9 @@ backend = [
   "uvicorn[standard]>=0.30.5",
 ]
 train = [
-  "datasets==5.0.0",
-  "unsloth==2025.11.1",
+  "datasets==4.3.0",
+  "transformers==5.5.0",
+  "unsloth==2026.6.2",
 ]
 
 [project.scripts]

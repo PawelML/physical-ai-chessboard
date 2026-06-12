@@ -107,3 +107,24 @@ After this succeeds, merge/convert to GGUF with the current Unsloth and
 llama.cpp workflow, then create an Ollama model with the base model's template.
 Keep generated adapters, merged weights, and GGUF files under
 `outputs/finetune/`.
+
+## Phase 2 Qwen3.5 9B Pilot Training
+
+Start with the 20k pilot dataset before training on the 200k main dataset.
+
+```bash
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 \
+python -m finetune.train_lora \
+  --model unsloth/Qwen3.5-9B \
+  --train-dataset data/finetune/lichess_2000_2013-12_pilot.train.jsonl \
+  --eval-dataset data/finetune/lichess_2000_2013-12_pilot.val.jsonl \
+  --output-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_lora \
+  --max-seq-length 1536 \
+  --num-train-epochs 1 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 32 \
+  --learning-rate 2e-4
+```
+
+The script stores `train_config.json` next to the LoRA adapter. It uses the
+model tokenizer's own chat template and masks loss to assistant responses only.
