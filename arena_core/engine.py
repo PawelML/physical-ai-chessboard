@@ -47,7 +47,6 @@ class RandomMoveSource:
         latency_ms = (time.perf_counter() - started) * 1000
         return MoveProposal(
             raw_response=f'{{"move":"{move}"}}',
-            source=self.source_type,
             latency_ms=latency_ms,
         )
 
@@ -69,7 +68,6 @@ class StaticMoveSource:
             self._idx += 1
         return MoveProposal(
             raw_response=response,
-            source=self.source_type,
             latency_ms=(time.perf_counter() - started) * 1000,
         )
 
@@ -96,7 +94,6 @@ class LLMMoveSource:
         latency_ms = (time.perf_counter() - started) * 1000
         return MoveProposal(
             raw_response=response.content,
-            source=self.source_type,
             latency_ms=latency_ms,
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
@@ -336,7 +333,6 @@ class ArenaGame:
             prompt_text,
             MoveProposal(
                 raw_response=raw_response,
-                source="human",
                 latency_ms=attempt_row.latency_ms,
             ),
         )

@@ -125,7 +125,6 @@ export type LeaderboardRow = {
 export type LeaderboardFilters = {
   runId?: number;
   color?: string;
-  mode?: string;
   legalityMode?: string;
 };
 
@@ -402,9 +401,6 @@ export function fetchLeaderboard(filters: LeaderboardFilters = {}): Promise<Lead
   }
   if (filters.color) {
     params.set("color", filters.color);
-  }
-  if (filters.mode) {
-    params.set("mode", filters.mode);
   }
   if (filters.legalityMode) {
     params.set("legality_mode", filters.legalityMode);

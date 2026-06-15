@@ -291,15 +291,6 @@ class GameDetail(BaseModel):
     moves: list[MoveOut]
 
 
-class RunListItem(BaseModel):
-    id: int
-    name: str
-    config_hash: str
-    seed: int | None
-    opening_suite_id: int | None
-    created_at: str
-
-
 class LeaderboardRow(BaseModel):
     id: int
     run_id: int
@@ -696,13 +687,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return state
 
-    @api.get("/human-games/{human_game_id}")
-    async def get_human_game(human_game_id: str) -> HumanGameState:
-        state = human_games.get(human_game_id)
-        if state is None:
-            raise HTTPException(status_code=404, detail="human game not found")
-        return state
-
     @api.post("/human-games/{human_game_id}/move")
     async def play_human_move(human_game_id: str, payload: HumanMoveRequest) -> HumanGameState:
         runtime = human_runtimes.get(human_game_id)
@@ -809,50 +793,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with session_factory() as session:
             rows = (
                 await session.execute(select(Game).order_by(Game.started_at.desc(), Game.id.desc()))
-            ).scalars()
-            return [
-                GameListItem(
-                    id=row.id,
-                    run_id=row.run_id,
-                    result=row.result,
-                    termination_reason=row.termination_reason,
-                    final_fen=row.final_fen,
-                    started_at=row.started_at.isoformat(),
-                    ended_at=row.ended_at.isoformat() if row.ended_at else None,
-                )
-                for row in rows
-            ]
-
-    @api.get("/runs")
-    async def list_runs() -> list[RunListItem]:
-        async with session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(BenchmarkRun).order_by(
-                        BenchmarkRun.created_at.desc(),
-                        BenchmarkRun.id.desc(),
-                    )
-                )
-            ).scalars()
-            return [
-                RunListItem(
-                    id=row.id,
-                    name=row.name,
-                    config_hash=row.config_hash,
-                    seed=row.seed,
-                    opening_suite_id=row.opening_suite_id,
-                    created_at=row.created_at.isoformat(),
-                )
-                for row in rows
-            ]
-
-    @api.get("/runs/{run_id}/games")
-    async def list_run_games(run_id: int) -> list[GameListItem]:
-        async with session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(Game).where(Game.run_id == run_id).order_by(Game.id)
-                )
             ).scalars()
             return [
                 GameListItem(
@@ -1041,8 +981,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with session_factory() as session:
             game = await session.get(Game, game_id)
             if game is None:
-                from fastapi import HTTPException
-
                 raise HTTPException(status_code=404, detail="game not found")
             moves = (
                 await session.execute(

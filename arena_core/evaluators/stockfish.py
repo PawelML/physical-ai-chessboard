@@ -39,13 +39,6 @@ class StockfishEvaluator:
         self._engine: chess.engine.SimpleEngine | None = None
         self._version: str | None = None
 
-    def __enter__(self) -> "StockfishEvaluator":
-        self._ensure_engine()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        self.close()
-
     def close(self) -> None:
         if self._engine is not None:
             try:
@@ -133,13 +126,6 @@ class StockfishMoveSource:
         self._engine: chess.engine.SimpleEngine | None = None
         self._version: str | None = None
 
-    def __enter__(self) -> "StockfishMoveSource":
-        self._ensure_engine()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        self.close()
-
     def close(self) -> None:
         if self._engine is not None:
             try:
@@ -165,7 +151,6 @@ class StockfishMoveSource:
         latency_ms = (time.perf_counter() - started) * 1000
         return MoveProposal(
             raw_response=f'{{"move":"{result.move.uci()}"}}',
-            source=self.source_type,
             latency_ms=latency_ms,
         )
 

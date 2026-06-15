@@ -148,18 +148,11 @@ async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
             await rebuild_game_summaries(session, run_id=result.run_id)
 
     client = TestClient(create_app(Settings(database_url=db_url)))
-    runs_response = client.get("/runs")
-    games_response = client.get(f"/runs/{result.run_id}/games")
     leaderboard_response = client.get(f"/leaderboard?run_id={result.run_id}")
     white_leaderboard_response = client.get(f"/leaderboard?run_id={result.run_id}&color=white")
     events_response = client.get(f"/runs/{result.run_id}/events")
     comparison_response = client.get("/runs/compare")
 
-    assert runs_response.status_code == 200
-    assert runs_response.json()[0]["id"] == result.run_id
-    assert games_response.status_code == 200
-    assert len(games_response.json()) == 20
-    assert {game["run_id"] for game in games_response.json()} == {result.run_id}
     assert leaderboard_response.status_code == 200
     assert len(leaderboard_response.json()) == 4
     assert leaderboard_response.json()[0]["games_played"] >= 1
