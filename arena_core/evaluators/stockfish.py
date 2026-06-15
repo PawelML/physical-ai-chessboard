@@ -233,7 +233,7 @@ def _classify(
     mate_after: int | None,
 ) -> str:
     if mate_before is not None or mate_after is not None:
-        if mate_before is not None and (mate_after is None or mate_after < mate_before):
+        if _mate_score_worsened(mate_before=mate_before, mate_after=mate_after):
             return "mate_missed"
         return "mate_position"
     if centipawn_loss is None:
@@ -247,3 +247,13 @@ def _classify(
     if centipawn_loss <= 300:
         return "mistake"
     return "blunder"
+
+
+def _mate_score_worsened(*, mate_before: int | None, mate_after: int | None) -> bool:
+    if mate_before is None:
+        return mate_after is not None and mate_after < 0
+    if mate_before > 0:
+        return mate_after is None or mate_after <= 0
+    if mate_before < 0:
+        return mate_after is not None and mate_after < 0 and mate_after > mate_before
+    return mate_after is not None and mate_after < 0
