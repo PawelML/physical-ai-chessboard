@@ -69,10 +69,9 @@ Results:
 - `pytest`: 67 passed, 1 existing Starlette/httpx deprecation warning.
 - Alembic: upgraded through `0007_attempt_reranker_metadata`.
 
-## Next Step
+## Phase A Ceiling Benchmark
 
-Run the Phase A ceiling benchmark against Stockfish 1320 with the current best
-GRPO Ollama model:
+Run completed:
 
 ```bash
 export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
@@ -97,9 +96,55 @@ arena tournament \
   --stockfish-elo 1320
 ```
 
-Gate:
+Run details:
 
-- proceed to Phase B only if blunders/game drops sharply and the run scores at
-  least one win or draw;
-- stop before classifier training if the Stockfish ceiling still scores 0 W/D;
-- raise `k` or temperature once if the telemetry shows too few safe candidates.
+- Run ID: `18`
+- Games: `100`
+- Summary rebuild: `Rebuilt 4 game summary rows`
+- Wall-clock: approximately 2.5-3 hours; the CLI has no per-game progress log.
+
+Model-perspective result versus the GRPO single-move baseline:
+
+| Metric | Run 17 GRPO single move | Run 18 reranked + Stockfish veto |
+| --- | ---: | ---: |
+| W-D-L | 0-8-92 | 0-5-95 |
+| Avg game plies | 47.26 | 63.69 |
+| Model moves/game | 23.42 | 31.62 |
+| Avg CPL | 115.00 | 109.22 |
+| Blunders/game | 2.03 | 4.25 |
+| Blunder rate / model move | 8.67% | 13.44% |
+| Illegal attempts | 12 | 3 |
+| Malformed attempts | 0 | 0 |
+
+Reranker telemetry for run 18:
+
+| Metric | Value |
+| --- | ---: |
+| Reranked model attempts | 3165 |
+| Avg legal candidates sampled | 4.979 / 5 |
+| Avg distinct legal candidates | 2.815 |
+| Avg vetoed distinct candidates | 0.780 |
+| Veto changed selected move | 1345 / 3165 (42.5%) |
+| All legal candidates vetoed | 316 / 3165 (10.0%) |
+| Avg chosen multiplicity | 2.753 |
+
+Gate decision:
+
+- **Phase A failed.**
+- The reranker did not reduce blunders/game; it increased both blunders/game and
+  blunder rate per model move.
+- W-D-L also regressed from `0-8-92` to `0-5-95`.
+- Avg CPL improved slightly, but this is not enough: the target was a sharp
+  blunder drop and at least one win/draw improvement.
+- **Do not build Phase B learned classifier from this configuration.**
+
+Interpretation:
+
+- Candidate generation is legal and diverse enough (`~5/5` legal samples,
+  `2.8` distinct legal moves), so the failure is not JSON/legality.
+- The low-node 1-ply Stockfish veto changes many moves, but the resulting moves
+  are not safer under the arena's full 200k-node evaluation.
+- Before revisiting Phase B, the selector itself needs a follow-up experiment:
+  likely compare `veto_nodes=200000`, select lowest CPL among all safe moves
+  instead of highest multiplicity, or run a small offline replay over saved
+  candidates to identify why veto-changed moves became blunders.
