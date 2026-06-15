@@ -198,16 +198,16 @@ async def _play_async(
     )
     try:
         async with session_factory() as session:
+            game = ArenaGame(
+                white=white,
+                black=black,
+                settings=settings,
+                legality_mode=cast("LegalityMode", legality_mode),
+                max_plies=max_plies,
+                evaluator=evaluator,
+                strategic_memory=strategic_memory,
+            )
             if commit_after_each_ply:
-                game = ArenaGame(
-                    white=white,
-                    black=black,
-                    settings=settings,
-                    legality_mode=cast("LegalityMode", legality_mode),
-                    max_plies=max_plies,
-                    evaluator=evaluator,
-                    strategic_memory=strategic_memory,
-                )
                 result = await game.run(
                     session,
                     commit_after_each_ply=True,
@@ -215,15 +215,6 @@ async def _play_async(
                 )
             else:
                 async with session.begin():
-                    game = ArenaGame(
-                        white=white,
-                        black=black,
-                        settings=settings,
-                        legality_mode=cast("LegalityMode", legality_mode),
-                        max_plies=max_plies,
-                        evaluator=evaluator,
-                        strategic_memory=strategic_memory,
-                    )
                     result = await game.run(session)
 
             rows = (

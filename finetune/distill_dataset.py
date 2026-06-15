@@ -103,13 +103,14 @@ def main() -> None:
         stockfish_path=stockfish_path,
     )
     stats = relabel_file(config)
+    stats_json = stats.to_json()
     if args.metadata_output is not None:
         write_metadata_sidecar(args.metadata_output, config=config, stats=stats)
     print(
         f"Wrote {stats.rows_written}/{stats.rows_read} rows "
         f"({config.label_mode} mode); "
-        f"human/engine agreement {stats.to_json()['human_engine_agreement_rate']}, "
-        f"human avg CPL {stats.to_json()['human_avg_cpl']}."
+        f"human/engine agreement {stats_json['human_engine_agreement_rate']}, "
+        f"human avg CPL {stats_json['human_avg_cpl']}."
     )
 
 

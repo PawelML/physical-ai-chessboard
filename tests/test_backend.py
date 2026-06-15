@@ -143,7 +143,7 @@ async def test_backend_lists_runs_and_run_games(tmp_path: Path) -> None:
                     max_plies=1,
                 ),
                 settings=Settings(max_retries=0),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
             await rebuild_game_summaries(session, run_id=result.run_id)
 
@@ -186,7 +186,7 @@ async def test_backend_compares_models_across_runs(tmp_path: Path) -> None:
                         max_plies=1,
                     ),
                     settings=Settings(max_retries=0),
-                    source_factory=lambda _name: RandomMoveSource(),
+                    source_factory=lambda _name, _rng: RandomMoveSource(),
                 )
                 await rebuild_game_summaries(session, run_id=result.run_id)
 

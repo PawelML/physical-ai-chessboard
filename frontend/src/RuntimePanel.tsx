@@ -226,26 +226,23 @@ function modelRuntimeStats(game: GameDetail | undefined, color: "white" | "black
     .reverse()
     .find((attempt) => attempt.token_usage !== null);
   const latencyTotalMs = moves.reduce((total, move) => total + move.latency_total_ms, 0);
-
-  return attempts.reduce(
-    (stats, attempt) => {
-      const usage = attempt.token_usage;
-      return {
-        totalTokens: stats.totalTokens + (usage?.total_tokens ?? 0),
-        retries: stats.retries,
-        invalidAttempts: stats.invalidAttempts + (attempt.legal_ok ? 0 : 1),
-        lastUsage: lastAttemptWithUsage?.token_usage ?? null,
-        averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
-      };
-    },
-    {
-      totalTokens: 0,
-      retries: moves.reduce((total, move) => total + move.retries_used, 0),
-      invalidAttempts: 0,
-      lastUsage: lastAttemptWithUsage?.token_usage ?? null,
-      averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
-    },
+  const retries = moves.reduce((total, move) => total + move.retries_used, 0);
+  const totalTokens = attempts.reduce(
+    (total, attempt) => total + (attempt.token_usage?.total_tokens ?? 0),
+    0,
   );
+  const invalidAttempts = attempts.reduce(
+    (total, attempt) => total + (attempt.legal_ok ? 0 : 1),
+    0,
+  );
+
+  return {
+    totalTokens,
+    retries,
+    invalidAttempts,
+    lastUsage: lastAttemptWithUsage?.token_usage ?? null,
+    averageLatencyMs: moves.length > 0 ? latencyTotalMs / moves.length : null,
+  };
 }
 
 function gameOutcome(game: GameDetail | undefined): "white" | "black" | "draw" | null {

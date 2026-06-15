@@ -78,7 +78,7 @@ async def test_real_stockfish_source_runs_tournament_game(tmp_path: Path) -> Non
                     max_plies=1,
                 ),
                 settings=settings,
-                source_factory=lambda source_name: _source_from_name(source_name, settings),
+                source_factory=lambda source_name, _rng: _source_from_name(source_name, settings),
             )
             await rebuild_game_summaries(session, run_id=result.run_id)
 

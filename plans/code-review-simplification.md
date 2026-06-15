@@ -77,16 +77,16 @@ Repeated logic that has drifted or will drift. Ordered by payoff.
 
 ## Tier 3 — Simplify (local readability, low risk)
 
-- [ ] `arena_core/engine.py:257` — drop the `feedback_for_attempt = feedback` alias; pass `feedback` directly to `feedback_given=` (line 270).
-- [ ] `arena_core/engine.py:507-515` — `_last_opponent_move_for_side` has two branches returning the same string; reduces to one parity check (`(side == chess.WHITE) != (len(san_history) % 2 == 1)`).
-- [ ] `arena_core/cli.py:200-227` — `commit_after_each_ply` branch builds `ArenaGame(...)` with an identical 6-arg body in both `if`/`else`. Build once, branch only on the session-context + flag.
-- [ ] `arena_core/tournaments.py:356-377` — `_accepts_rng` introspects the factory signature only so terse test lambdas (`lambda _name: ...`) work. Standardize `SourceFactory` to `(name, rng)`, update the test lambdas, delete `_accepts_rng`.
-- [ ] `arena_core/leaderboards.py:180-187` — `wilson_interval(...)` is called twice per metric to unpack `[0]`/`[1]` (3 redundant computations). `lo, hi = wilson_interval(...)` once. Also the `if game.run_id is None: continue` guard at `:54` is redundant given the WHERE clause.
-- [ ] `arena_core/evaluators/stockfish.py:91-96` vs `150-157` — engine-version formatting (`f"{name} ({author})" if … else …`) is duplicated across the two classes. Extract `_format_engine_version(engine)`. (And, optionally, a `_StockfishProcess` base for the verbatim `__init__`/`close`/`__del__`/`_ensure_engine` lifecycle.)
-- [ ] `frontend/src/App.tsx:1982-1989` — `promotionSymbol`'s `white`/`black` maps are identical; the `color` arg has no effect. Collapse to one map, drop the arg (and `promotion.color` at the call site, `:1935`).
-- [ ] `frontend/src/App.tsx:2314-2333` — `modelRuntimeStats` `reduce` recomputes `retries`/`lastUsage`/`averageLatencyMs` identically every iteration; only `totalTokens`/`invalidAttempts` accumulate. Make it a single pass and set the constants directly.
-- [ ] `backend/main.py` — replace the verbose field-by-field ORM→Pydantic copies (`leaderboard` at `985-1027` copies 36 fields; same pattern in the `*_out` builders) with `Model.model_validate(row, from_attributes=True)` where names already match, then patch the few computed fields (e.g. `participant`, `*.isoformat()`).
-- [ ] `finetune/distill_dataset.py:116-121` — `stats.to_json()` is called twice in `print(...)`; bind it once.
+- [x] `arena_core/engine.py:257` — drop the `feedback_for_attempt = feedback` alias; pass `feedback` directly to `feedback_given=` (line 270).
+- [x] `arena_core/engine.py:507-515` — `_last_opponent_move_for_side` has two branches returning the same string; reduces to one parity check (`(side == chess.WHITE) != (len(san_history) % 2 == 1)`).
+- [x] `arena_core/cli.py:200-227` — `commit_after_each_ply` branch builds `ArenaGame(...)` with an identical 6-arg body in both `if`/`else`. Build once, branch only on the session-context + flag.
+- [x] `arena_core/tournaments.py:356-377` — `_accepts_rng` introspects the factory signature only so terse test lambdas (`lambda _name: ...`) work. Standardize `SourceFactory` to `(name, rng)`, update the test lambdas, delete `_accepts_rng`.
+- [x] `arena_core/leaderboards.py:180-187` — `wilson_interval(...)` is called twice per metric to unpack `[0]`/`[1]` (3 redundant computations). `lo, hi = wilson_interval(...)` once. Also the `if game.run_id is None: continue` guard at `:54` is redundant given the WHERE clause.
+- [x] `arena_core/evaluators/stockfish.py:91-96` vs `150-157` — engine-version formatting (`f"{name} ({author})" if … else …`) is duplicated across the two classes. Extract `_format_engine_version(engine)`. (And, optionally, a `_StockfishProcess` base for the verbatim `__init__`/`close`/`__del__`/`_ensure_engine` lifecycle.)
+- [x] `frontend/src/App.tsx:1982-1989` — `promotionSymbol`'s `white`/`black` maps are identical; the `color` arg has no effect. Collapse to one map, drop the arg (and `promotion.color` at the call site, `:1935`).
+- [x] `frontend/src/App.tsx:2314-2333` — `modelRuntimeStats` `reduce` recomputes `retries`/`lastUsage`/`averageLatencyMs` identically every iteration; only `totalTokens`/`invalidAttempts` accumulate. Make it a single pass and set the constants directly.
+- [x] `backend/main.py` — replace the verbose field-by-field ORM→Pydantic copies (`leaderboard` at `985-1027` copies 36 fields; same pattern in the `*_out` builders) with `Model.model_validate(row, from_attributes=True)` where names already match, then patch the few computed fields (e.g. `participant`, `*.isoformat()`).
+- [x] `finetune/distill_dataset.py:116-121` — `stats.to_json()` is called twice in `print(...)`; bind it once.
 
 ---
 

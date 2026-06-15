@@ -47,7 +47,7 @@ async def test_tournament_persists_run_openings_and_both_colors(tmp_path: Path) 
                     seed=7,
                 ),
                 settings=Settings(max_retries=0),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
 
     async with session_factory() as session:
@@ -88,7 +88,7 @@ async def test_tournament_can_limit_exact_game_count(tmp_path: Path) -> None:
                     game_count=3,
                 ),
                 settings=Settings(max_retries=0),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
 
     async with session_factory() as session:
@@ -170,7 +170,7 @@ async def test_tournament_live_commit_exposes_started_game(tmp_path: Path) -> No
                 game_count=1,
             ),
             settings=Settings(max_retries=0),
-            source_factory=lambda _name: RandomMoveSource(),
+            source_factory=lambda _name, _rng: RandomMoveSource(),
             commit_after_each_ply=True,
             on_game_started=record_visible_game,
         )
@@ -213,7 +213,7 @@ async def test_stockfish_participant_metadata_is_captured_without_playing(tmp_pa
                     stockfish_limit_strength=True,
                     stockfish_target_elo=1400,
                 ),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
 
     async with session_factory() as session:
@@ -247,7 +247,7 @@ async def test_tournament_records_evaluator_stockfish_version(tmp_path: Path) ->
                     max_plies=0,
                 ),
                 settings=Settings(max_retries=0),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
                 evaluator=FakeVersionedEvaluator(),
             )
 
@@ -275,7 +275,7 @@ async def test_tournament_records_model_pair_vram_warning(tmp_path: Path) -> Non
                     max_plies=0,
                 ),
                 settings=Settings(max_retries=0, ollama_vram_budget_gb=24),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
 
     async with session_factory() as session:
@@ -341,7 +341,7 @@ async def test_tournament_captures_ollama_model_snapshot_metadata(
                     ollama_num_gpu=32,
                     ollama_think="auto",
                 ),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
 
     async with session_factory() as session:
@@ -396,7 +396,7 @@ async def test_rebuild_game_summaries_materializes_leaderboard_rows(tmp_path: Pa
                     max_plies=1,
                 ),
                 settings=Settings(max_retries=0),
-                source_factory=lambda _name: RandomMoveSource(),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
             )
             row_count = await rebuild_game_summaries(session, run_id=result.run_id)
 

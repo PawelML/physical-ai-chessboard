@@ -50,7 +50,7 @@ class StockfishEvaluator:
     def version(self) -> str:
         engine = self._ensure_engine()
         if self._version is None:
-            self._version = self._engine_version(engine)
+            self._version = _format_engine_version(engine)
         return self._version
 
     def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
@@ -80,13 +80,6 @@ class StockfishEvaluator:
             centipawn_loss=cpl,
             classification=_classify(cpl, mate_before, mate_after),
         )
-
-    def _engine_version(self, engine: chess.engine.SimpleEngine) -> str:
-        name = engine.id.get("name")
-        author = engine.id.get("author")
-        if name and author:
-            return f"{name} ({author})"
-        return name or "unknown"
 
     def _ensure_engine(self) -> chess.engine.SimpleEngine:
         if self._engine is None:
@@ -137,9 +130,7 @@ class StockfishMoveSource:
     def version(self) -> str:
         engine = self._ensure_engine()
         if self._version is None:
-            name = engine.id.get("name")
-            author = engine.id.get("author")
-            self._version = f"{name} ({author})" if name and author else name or "unknown"
+            self._version = _format_engine_version(engine)
         return self._version
 
     async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
@@ -172,6 +163,14 @@ class StockfishMoveSource:
             self.close()
         except Exception:
             pass
+
+
+def _format_engine_version(engine: chess.engine.SimpleEngine) -> str:
+    name = engine.id.get("name")
+    author = engine.id.get("author")
+    if name and author:
+        return f"{name} ({author})"
+    return name or "unknown"
 
 
 def _score_parts(score: chess.engine.Score) -> tuple[int | None, int | None]:

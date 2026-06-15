@@ -105,9 +105,9 @@ export function ChessBoard({
         submitMove(candidates[0]);
         return;
       }
-      setPromotion({ from, to, moves: candidates, color: humanColor });
+      setPromotion({ from, to, moves: candidates });
     },
-    [canInteract, humanColor, legalMoves, legalSources, submitMove],
+    [canInteract, legalMoves, legalSources, submitMove],
   );
 
   const draggingFrom = drag?.from;
@@ -271,7 +271,7 @@ export function ChessBoard({
                 aria-label={`Promote to ${promotionName(legalMove)}`}
                 title={`Promote to ${promotionName(legalMove)}`}
               >
-                {promotionSymbol(legalMove, promotion.color)}
+                {promotionSymbol(legalMove)}
               </button>
             ))}
           </div>
@@ -309,7 +309,6 @@ type PromotionPrompt = {
   from: string;
   to: string;
   moves: string[];
-  color: "white" | "black";
 };
 
 function squareFromPoint(x: number, y: number): string | null {
@@ -318,13 +317,10 @@ function squareFromPoint(x: number, y: number): string | null {
   return square?.dataset.square ?? null;
 }
 
-function promotionSymbol(move: string, color: "white" | "black") {
+function promotionSymbol(move: string) {
   const piece = move.at(-1) ?? "q";
-  const symbols: Record<"white" | "black", Record<string, string>> = {
-    white: { q: "♛", r: "♜", b: "♝", n: "♞" },
-    black: { q: "♛", r: "♜", b: "♝", n: "♞" },
-  };
-  return symbols[color][piece] ?? symbols[color].q;
+  const symbols: Record<string, string> = { q: "♛", r: "♜", b: "♝", n: "♞" };
+  return symbols[piece] ?? symbols.q;
 }
 
 function promotionName(move: string) {

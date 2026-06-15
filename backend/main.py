@@ -830,45 +830,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             ).all()
             return [
-                LeaderboardRow(
-                    id=summary.id,
-                    run_id=summary.run_id,
-                    run_participant_id=summary.run_participant_id,
-                    participant=participant.display_name,
-                    model_snapshot_id=summary.model_snapshot_id,
-                    color=summary.color,
-                    mode=summary.mode,
-                    legality_mode=summary.legality_mode,
-                    opening_suite_id=summary.opening_suite_id,
-                    games_played=summary.games_played,
-                    wins=summary.wins,
-                    draws=summary.draws,
-                    losses=summary.losses,
-                    unfinished=summary.unfinished,
-                    avg_game_plies=summary.avg_game_plies,
-                    avg_cpl=summary.avg_cpl,
-                    evaluated_move_count=summary.evaluated_move_count,
-                    accuracy_rate=summary.accuracy_rate,
-                    blunders=summary.blunders,
-                    mistakes=summary.mistakes,
-                    inaccuracies=summary.inaccuracies,
-                    attempt_count=summary.attempt_count,
-                    illegal_attempts=summary.illegal_attempts,
-                    malformed_attempts=summary.malformed_attempts,
-                    illegal_rate=summary.illegal_rate,
-                    illegal_rate_ci_low=summary.illegal_rate_ci_low,
-                    illegal_rate_ci_high=summary.illegal_rate_ci_high,
-                    malformed_rate=summary.malformed_rate,
-                    malformed_rate_ci_low=summary.malformed_rate_ci_low,
-                    malformed_rate_ci_high=summary.malformed_rate_ci_high,
-                    win_rate=summary.win_rate,
-                    win_rate_ci_low=summary.win_rate_ci_low,
-                    win_rate_ci_high=summary.win_rate_ci_high,
-                    low_sample=summary.low_sample,
-                    avg_retries=summary.avg_retries,
-                    forfeit_invalid_count=summary.forfeit_invalid_count,
-                    avg_latency_ms=summary.avg_latency_ms,
-                    total_tokens=summary.total_tokens,
+                LeaderboardRow.model_validate(
+                    {
+                        **summary.__dict__,
+                        "participant": participant.display_name,
+                    }
                 )
                 for summary, participant in rows
             ]
@@ -934,21 +900,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 final_fen=game.final_fen,
                 pgn=game.pgn,
                 moves=[
-                    MoveOut(
-                        id=move.id,
-                        ply=move.ply,
-                        color=move.color,
-                        fen_before=move.fen_before,
-                        fen_after=move.fen_after,
-                        accepted_uci=move.accepted_uci,
-                        accepted_san=move.accepted_san,
-                        legal_move_count=move.legal_move_count,
-                        move_source=move.move_source,
-                        retries_used=move.retries_used,
-                        latency_total_ms=move.latency_total_ms,
-                        attempts=attempts_by_move.get(move.id, []),
-                        engine_evaluations=evals_by_move.get(move.id, []),
-                        annotations=annotations_by_move.get(move.id, []),
+                    MoveOut.model_validate(
+                        {
+                            **move.__dict__,
+                            "attempts": attempts_by_move.get(move.id, []),
+                            "engine_evaluations": evals_by_move.get(move.id, []),
+                            "annotations": annotations_by_move.get(move.id, []),
+                        }
                     )
                     for move in move_rows
                 ],
@@ -1606,16 +1564,11 @@ async def _attempts_by_move(
         if attempt.move_id is None:
             continue
         grouped.setdefault(attempt.move_id, []).append(
-            AttemptOut(
-                id=attempt.id,
-                ply=attempt.ply,
-                attempt_number=attempt.attempt_number,
-                parsed_move=attempt.parsed_move,
-                parse_ok=attempt.parse_ok,
-                legal_ok=attempt.legal_ok,
-                error_type=attempt.error_type,
-                latency_ms=attempt.latency_ms,
-                token_usage=_token_usage_out(token_usage),
+            AttemptOut.model_validate(
+                {
+                    **attempt.__dict__,
+                    "token_usage": _token_usage_out(token_usage),
+                }
             )
         )
     return grouped
@@ -1638,19 +1591,7 @@ async def _evaluations_by_move(
     grouped: dict[int, list[EngineEvaluationOut]] = {}
     for row in rows:
         grouped.setdefault(row.move_id, []).append(
-            EngineEvaluationOut(
-                engine_name=row.engine_name,
-                engine_version=row.engine_version,
-                nodes=row.nodes,
-                depth_reached=row.depth_reached,
-                eval_before_cp=row.eval_before_cp,
-                eval_after_cp=row.eval_after_cp,
-                mate_before=row.mate_before,
-                mate_after=row.mate_after,
-                best_move_uci=row.best_move_uci,
-                centipawn_loss=row.centipawn_loss,
-                classification=row.classification,
-            )
+            EngineEvaluationOut.model_validate(row, from_attributes=True)
         )
     return grouped
 
@@ -1672,10 +1613,11 @@ async def _annotations_by_move(
     grouped: dict[int, list[MoveAnnotationOut]] = {}
     for row in rows:
         grouped.setdefault(row.move_id, []).append(
-            MoveAnnotationOut(
-                persona=row.persona,
-                commentary=row.commentary,
-                created_at=row.created_at.isoformat(),
+            MoveAnnotationOut.model_validate(
+                {
+                    **row.__dict__,
+                    "created_at": row.created_at.isoformat(),
+                }
             )
         )
     return grouped
@@ -1684,26 +1626,15 @@ async def _annotations_by_move(
 def _token_usage_out(row: TokenUsage | None) -> TokenUsageOut | None:
     if row is None:
         return None
-    return TokenUsageOut(
-        prompt_tokens=row.prompt_tokens,
-        completion_tokens=row.completion_tokens,
-        total_tokens=row.total_tokens,
-        estimated_context_window=row.estimated_context_window,
-        estimated_context_remaining=row.estimated_context_remaining,
-        truncation_applied=row.truncation_applied,
-        cost_usd=row.cost_usd,
-    )
+    return TokenUsageOut.model_validate(row, from_attributes=True)
 
 
 def _operational_event_out(row: OperationalEvent) -> OperationalEventOut:
-    return OperationalEventOut(
-        id=row.id,
-        run_id=row.run_id,
-        event_kind=row.event_kind,
-        severity=row.severity,
-        message=row.message,
-        payload=row.payload,
-        created_at=row.created_at.isoformat(),
+    return OperationalEventOut.model_validate(
+        {
+            **row.__dict__,
+            "created_at": row.created_at.isoformat(),
+        }
     )
 
 

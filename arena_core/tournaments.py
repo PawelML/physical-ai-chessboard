@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from hashlib import sha256
-from inspect import Parameter, isawaitable, signature
+from inspect import isawaitable
 
 import chess
 from sqlalchemy import select
@@ -20,7 +20,7 @@ from arena_core.prompts import LegalityMode, build_strict_prompt
 from arena_core.telemetry import estimate_pair_footprint
 from arena_core.utils import close_if_present
 
-SourceFactory = Callable[..., MoveSource]
+SourceFactory = Callable[[str, random.Random], MoveSource]
 
 
 @dataclass(frozen=True)
@@ -359,23 +359,7 @@ def _source_from_factory(
     source_name: str,
     rng: random.Random,
 ) -> MoveSource:
-    if _accepts_rng(source_factory):
-        return source_factory(source_name, rng)
-    return source_factory(source_name)
-
-
-def _accepts_rng(source_factory: SourceFactory) -> bool:
-    try:
-        parameters = signature(source_factory).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    positional = {
-        Parameter.POSITIONAL_ONLY,
-        Parameter.POSITIONAL_OR_KEYWORD,
-    }
-    return any(parameter.kind is Parameter.VAR_POSITIONAL for parameter in parameters) or sum(
-        1 for parameter in parameters if parameter.kind in positional
-    ) >= 2
+    return source_factory(source_name, rng)
 
 
 def _initial_prompt_memory() -> dict[str, str]:

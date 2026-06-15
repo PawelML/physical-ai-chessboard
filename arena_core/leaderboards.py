@@ -51,9 +51,9 @@ async def rebuild_game_summaries(session: AsyncSession, *, run_id: int | None = 
     games = (await session.execute(games_query)).scalars().all()
     buckets: dict[tuple[int, str], _Bucket] = {}
     for game in games:
-        if game.run_id is None:
-            continue
-        run = await session.get(models.BenchmarkRun, game.run_id)
+        run_id_for_game = game.run_id
+        assert run_id_for_game is not None
+        run = await session.get(models.BenchmarkRun, run_id_for_game)
         if run is None:
             continue
         prompt = await session.get(models.Prompt, run.prompt_id) if run.prompt_id else None
@@ -153,6 +153,15 @@ async def _accumulate_game(
 
 
 def _summary_row(bucket: _Bucket) -> models.GameSummary:
+    illegal_rate_ci_low, illegal_rate_ci_high = wilson_interval(
+        bucket.illegal_attempts,
+        bucket.attempts,
+    )
+    malformed_rate_ci_low, malformed_rate_ci_high = wilson_interval(
+        bucket.malformed_attempts,
+        bucket.attempts,
+    )
+    win_rate_ci_low, win_rate_ci_high = wilson_interval(bucket.wins, bucket.games_played)
     return models.GameSummary(
         run_id=bucket.participant.run_id,
         run_participant_id=bucket.participant.id,
@@ -177,14 +186,14 @@ def _summary_row(bucket: _Bucket) -> models.GameSummary:
         illegal_attempts=bucket.illegal_attempts,
         malformed_attempts=bucket.malformed_attempts,
         illegal_rate=_rate(bucket.illegal_attempts, bucket.attempts),
-        illegal_rate_ci_low=wilson_interval(bucket.illegal_attempts, bucket.attempts)[0],
-        illegal_rate_ci_high=wilson_interval(bucket.illegal_attempts, bucket.attempts)[1],
+        illegal_rate_ci_low=illegal_rate_ci_low,
+        illegal_rate_ci_high=illegal_rate_ci_high,
         malformed_rate=_rate(bucket.malformed_attempts, bucket.attempts),
-        malformed_rate_ci_low=wilson_interval(bucket.malformed_attempts, bucket.attempts)[0],
-        malformed_rate_ci_high=wilson_interval(bucket.malformed_attempts, bucket.attempts)[1],
+        malformed_rate_ci_low=malformed_rate_ci_low,
+        malformed_rate_ci_high=malformed_rate_ci_high,
         win_rate=_rate(bucket.wins, bucket.games_played),
-        win_rate_ci_low=wilson_interval(bucket.wins, bucket.games_played)[0],
-        win_rate_ci_high=wilson_interval(bucket.wins, bucket.games_played)[1],
+        win_rate_ci_low=win_rate_ci_low,
+        win_rate_ci_high=win_rate_ci_high,
         low_sample=bucket.games_played < 10,
         avg_retries=_avg(bucket.retries) or 0.0,
         forfeit_invalid_count=bucket.forfeit_invalid_count,

@@ -260,7 +260,6 @@ class ArenaGame:
             latency_total_ms += proposal.latency_ms
             parsed = parse_uci_json(proposal.raw_response)
             legal_ok, legal_reason, chess_move = self._validate_move(parsed)
-            feedback_for_attempt = feedback
             attempt_row = models.Attempt(
                 game_id=game_id,
                 ply=self.board.ply() + 1,
@@ -273,7 +272,7 @@ class ArenaGame:
                 parse_ok=parsed.parse_ok,
                 legal_ok=legal_ok,
                 error_type=None if legal_ok else parsed.error_type or "illegal_move",
-                feedback_given=feedback_for_attempt,
+                feedback_given=feedback,
                 latency_ms=proposal.latency_ms,
                 thinking=proposal.thinking,
                 thinking_used=proposal.thinking_used,
