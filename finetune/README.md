@@ -77,6 +77,39 @@ Defaults match the Phase 1 plan:
 Use `--max-examples 200000` for the first main dataset after the 20k pilot
 looks sane.
 
+## Relabel with Stockfish (Distillation / Blunder Filtering)
+
+`finetune/distill_dataset.py` relabels an existing JSONL with the arena's
+`StockfishEvaluator` — prompts stay byte-identical (the target move is never in
+the prompt), only the completion changes. Runs on CPU only and uses the normal
+arena venv (`.venv`), not the training venv. Two modes:
+
+- `--label-mode distill` (default): completion becomes Stockfish's best move at
+  fixed `--nodes` (engine distillation, Variant B of the plan);
+- `--label-mode filter`: keeps the human move but drops rows where it loses
+  more than `--max-cpl` centipawns or misses a mate.
+
+```bash
+export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
+python -m finetune.distill_dataset \
+  --input data/finetune/lichess_2000_2024-01_main.train.jsonl \
+  --output data/finetune/lichess_2000_2024-01_distilled.train.jsonl \
+  --metadata-output data/finetune/lichess_2000_2024-01_distilled.train.meta.json \
+  --label-mode distill \
+  --nodes 100000
+```
+
+Repeat for the `.val.jsonl` file so held-out metrics use the same labels.
+Throughput is ~25 rows/s with the default worker count (≈2 h for the 190k main
+set). Exact duplicate (prompt, completion) rows — common for openings once
+labels are deterministic — are dropped by default (`--no-dedup` keeps them).
+The sidecar metadata records human/engine agreement and human CPL stats, which
+quantify the teacher noise (≈50% agreement for 2000-rated players). Use
+`--limit 100` for a smoke run first.
+
+Rationale and the decision record behind this step:
+[`plans/fine_tune_model/pilot-analysis-and-distillation.md`](../plans/fine_tune_model/pilot-analysis-and-distillation.md).
+
 ## Evaluate Base Model on Held-Out Examples
 
 Before training, record the base model's parse/legal/top-1 metrics on the
@@ -129,6 +162,35 @@ python -m finetune.train_lora \
 The script stores `train_config.json` next to the LoRA adapter. It uses the
 model tokenizer's own chat template and masks loss to assistant responses only.
 
+## Phase 2 Gemma4 E4B Pilot Training
+
+Gemma4 E4B uses a different chat template from Qwen. Keep the response masking
+parts aligned with the tokenizer-rendered turns:
+
+```bash
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 \
+python -m finetune.train_lora \
+  --model unsloth/gemma-4-E4B-it-unsloth-bnb-4bit \
+  --train-dataset data/finetune/lichess_2000_2013-12_pilot.train.jsonl \
+  --output-dir outputs/finetune/gemma4_e4b_lichess_2000_pilot_lora \
+  --max-seq-length 1536 \
+  --num-train-epochs 1 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 32 \
+  --learning-rate 2e-4 \
+  --eval-steps 0 \
+  --save-steps 50 \
+  --save-total-limit 2 \
+  --logging-steps 5 \
+  --instruction-part $'<|turn>user\n' \
+  --response-part $'<|turn>model\n'
+```
+
+The 20k pilot run completed on the local RTX 3090 in 9287 seconds. Held-out
+LoRA sanity on 100 examples produced 97% JSON parse, 37% legal moves, and 8%
+top-1 match. This means the pipeline is valid, but the Gemma4 E4B pilot is much
+weaker than the Qwen3.5 9B pilot on chess move quality.
+
 ## Phase 4 Export to GGUF and Ollama
 
 Export the trained Qwen3.5 9B pilot adapter, write Ollama Modelfiles, and
@@ -177,3 +239,103 @@ python -m finetune.evaluate_baseline \
 The Modelfile template intentionally wraps the raw arena prompt in the Qwen3.5
 chat format used during training and emits the empty thinking block expected
 when `enable_thinking=False`.
+
+For Gemma4 E4B, pass the matching template family:
+
+```bash
+python -m finetune.export_ollama \
+  --adapter-dir outputs/finetune/gemma4_e4b_lichess_2000_pilot_lora \
+  --output-dir outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf \
+  --model-name chess-ft-gemma4-e4b-pilot \
+  --template-family gemma4 \
+  --create-ollama
+```
+
+If Unsloth's GGUF conversion wrapper fails after merging, convert manually with
+llama.cpp and then repeat the Ollama import with `--skip-export`:
+
+```bash
+python /home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py \
+  --outfile outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
+  --outtype bf16 \
+  outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf
+
+/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+  outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
+  outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-q4_k_m.gguf \
+  q4_k_m
+
+/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+  outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
+  outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-q8_0.gguf \
+  q8_0
+```
+
+The generated Gemma4 Ollama models are:
+
+```text
+chess-ft-gemma4-e4b-pilot-q4_k_m
+chess-ft-gemma4-e4b-pilot-q8_0
+```
+
+## Phase 6 GRPO with Stockfish Reward
+
+GRPO continues from the Stockfish-distilled Qwen3.5 policy, not from the base
+model. The reward is computed with the arena's own `StockfishEvaluator` CPL and
+the arena parser: malformed JSON is `-1.0`, illegal moves are `-0.5`, and legal
+moves receive `1 - min(CPL, 300) / 300`.
+
+First record the distilled SFT CPL baseline on the held-out validation split:
+
+```bash
+export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 \
+python -m finetune.evaluate_cpl \
+  --dataset data/finetune/lichess_2000_2013-12_pilot_distilled.val.jsonl \
+  --adapter-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_distilled_lora \
+  --output outputs/finetune/qwen35_9b_distilled_lora_val_cpl_eval.json \
+  --predictions-output outputs/finetune/qwen35_9b_distilled_lora_val_cpl_predictions.jsonl \
+  --limit 948 \
+  --disable-thinking \
+  --reward-nodes 50000
+```
+
+Run the first bounded GRPO smoke pass. If
+`outputs/finetune/qwen35_9b_lichess_2000_pilot_distilled_merged_hf` does not
+exist, `train_grpo` creates it once from the distilled adapter with
+`save_pretrained_merged(..., save_method="merged_16bit")`.
+
+```bash
+export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 \
+python -m finetune.train_grpo \
+  --train-dataset data/finetune/lichess_2000_2013-12_pilot_distilled.train.jsonl \
+  --distilled-adapter-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_distilled_lora \
+  --merged-model-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_distilled_merged_hf \
+  --output-dir outputs/finetune/qwen35_9b_lichess_2000_pilot_grpo_smoke_lora \
+  --limit 10000 \
+  --max-steps 30 \
+  --max-seq-length 1536 \
+  --max-prompt-length 1536 \
+  --max-completion-length 16 \
+  --num-generations 8 \
+  --temperature 1.0 \
+  --learning-rate 1e-5 \
+  --beta 0.04 \
+  --per-device-train-batch-size 1 \
+  --gradient-accumulation-steps 8 \
+  --reward-nodes 50000 \
+  --logging-steps 5
+```
+
+The GRPO script writes:
+
+- `grpo_config.json` with exact hyperparameters;
+- `reward_metrics.jsonl` with mean reward, malformed fraction, illegal fraction,
+  and legal-move CPL per reward callback;
+- the final GRPO LoRA adapter and tokenizer in the output directory.
+
+Only after the smoke run keeps JSON/legal stable, run the full one-epoch pass by
+using a fresh output directory and `--max-steps -1`. Gate the result with the
+same CPL eval command against the GRPO adapter; proceed to GGUF/Ollama and arena
+games only if mean generated CPL drops without a JSON/legal regression.

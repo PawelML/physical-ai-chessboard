@@ -9,7 +9,7 @@ DEFAULT_OUTPUT_DIR = Path("outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf")
 DEFAULT_MODEL_NAME = "chess-ft-qwen35-9b-pilot"
 DEFAULT_MAX_SEQ_LENGTH = 1536
 
-TRAINING_TEMPLATE = """<|im_start|>user
+QWEN35_TEMPLATE = """<|im_start|>user
 {{ .Prompt }}<|im_end|>
 <|im_start|>assistant
 <think>
@@ -17,6 +17,22 @@ TRAINING_TEMPLATE = """<|im_start|>user
 </think>
 
 """
+
+GEMMA4_TEMPLATE = """<bos><|turn>user
+{{ .Prompt }}<turn|>
+<|turn>model
+"""
+
+TEMPLATE_FAMILIES = {
+    "qwen35": {
+        "template": QWEN35_TEMPLATE,
+        "stop": ["<|im_end|>"],
+    },
+    "gemma4": {
+        "template": GEMMA4_TEMPLATE,
+        "stop": ["<turn|>", "<eos>"],
+    },
+}
 
 
 def main() -> None:
@@ -35,6 +51,7 @@ def main() -> None:
     modelfiles = _write_modelfiles(
         output_dir=output_dir,
         model_name=args.model_name,
+        template_family=args.template_family,
         num_ctx=args.num_ctx,
         num_predict=args.num_predict,
     )
@@ -78,6 +95,7 @@ def _write_modelfiles(
     *,
     output_dir: Path,
     model_name: str,
+    template_family: str,
     num_ctx: int,
     num_predict: int,
 ) -> list[Path]:
@@ -85,6 +103,7 @@ def _write_modelfiles(
     if not ggufs:
         raise SystemExit(f"No GGUF files found in {output_dir}")
 
+    template_config = TEMPLATE_FAMILIES[template_family]
     modelfiles: list[Path] = []
     for gguf in ggufs:
         quantization = _quantization_suffix(gguf)
@@ -94,8 +113,8 @@ def _write_modelfiles(
             "\n".join(
                 [
                     f"FROM {gguf.resolve()}",
-                    'TEMPLATE """' + TRAINING_TEMPLATE + '"""',
-                    'PARAMETER stop "<|im_end|>"',
+                    'TEMPLATE """' + str(template_config["template"]) + '"""',
+                    *[f'PARAMETER stop "{stop}"' for stop in template_config["stop"]],
                     "PARAMETER temperature 0",
                     f"PARAMETER num_ctx {num_ctx}",
                     f"PARAMETER num_predict {num_predict}",
@@ -128,6 +147,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--adapter-dir", type=Path, default=DEFAULT_ADAPTER_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
+    parser.add_argument(
+        "--template-family",
+        choices=sorted(TEMPLATE_FAMILIES),
+        default="qwen35",
+        help="Ollama prompt wrapper matching the chat template used during training.",
+    )
     parser.add_argument("--max-seq-length", type=int, default=DEFAULT_MAX_SEQ_LENGTH)
     parser.add_argument(
         "--quantization-method",

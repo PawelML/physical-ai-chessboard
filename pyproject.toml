@@ -34,6 +34,7 @@ backend = [
 ]
 train = [
   "datasets==4.3.0",
+  "trl==0.24.0",
   "transformers==5.5.0",
   "unsloth==2026.6.2",
 ]
