@@ -456,8 +456,8 @@ Export:
 
 - Merged GRPO LoRA into 16-bit HF with Unsloth `save_pretrained_merged`.
 - Converted merged HF to BF16 GGUF with
-  `/home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py`.
-- Quantized to Q8_0 with `/home/pawelo/.unsloth/llama.cpp/llama-quantize`.
+  `$HOME/.unsloth/llama.cpp/convert_hf_to_gguf.py`.
+- Quantized to Q8_0 with `$HOME/.unsloth/llama.cpp/llama-quantize`.
 - Removed intermediate BF16 GGUF and merged HF after Q8_0 was created.
 - Ollama model:
   `chess-ft-qwen35-9b-pilot-grpo-q8_0:latest`

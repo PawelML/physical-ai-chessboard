@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the Chess Arena locally (backend + frontend) so the app is reachable on
-# the LAN at http://<this-machine-ip>:5173 — e.g. http://192.168.10.73:5173.
+# the LAN at http://<this-machine-ip>:5173.
 #
 # Usage:   bash scripts/run-dev.sh
 # Stop:    Ctrl-C  (stops both backend and frontend together)

@@ -73,8 +73,8 @@ TypeError: ModelBase.__init__() got an unexpected keyword argument 'target_model
 
 Workaround used:
 
-1. Convert merged HF manually with `/home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py`.
-2. Quantize manually with `/home/pawelo/.unsloth/llama.cpp/llama-quantize`.
+1. Convert merged HF manually with `$HOME/.unsloth/llama.cpp/convert_hf_to_gguf.py`.
+2. Quantize manually with `$HOME/.unsloth/llama.cpp/llama-quantize`.
 3. Re-run `finetune.export_ollama --skip-export --template-family gemma4 --create-ollama`.
 
 Final GGUF artifacts:

@@ -255,17 +255,17 @@ If Unsloth's GGUF conversion wrapper fails after merging, convert manually with
 llama.cpp and then repeat the Ollama import with `--skip-export`:
 
 ```bash
-python /home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py \
+python "$HOME/.unsloth/llama.cpp/convert_hf_to_gguf.py" \
   --outfile outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
   --outtype bf16 \
   outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf
 
-/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+"$HOME/.unsloth/llama.cpp/llama-quantize" \
   outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
   outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-q4_k_m.gguf \
   q4_k_m
 
-/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+"$HOME/.unsloth/llama.cpp/llama-quantize" \
   outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-bf16.gguf \
   outputs/finetune/gemma4_e4b_lichess_2000_pilot_gguf/chess-ft-gemma4-e4b-pilot-q8_0.gguf \
   q8_0

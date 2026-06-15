@@ -48,44 +48,44 @@ headers). Since sudo was not available non-interactively, the local workaround
 was:
 
 1. install `cmake` and `ninja` into `.venv-train`;
-2. clone llama.cpp under `/home/pawelo/.unsloth/llama.cpp`;
+2. clone llama.cpp under `$HOME/.unsloth/llama.cpp`;
 3. build `llama-quantize` with curl disabled.
 
 Build command:
 
 ```bash
 PATH=.venv-train/bin:$PATH \
-cmake -S /home/pawelo/.unsloth/llama.cpp \
-  -B /home/pawelo/.unsloth/llama.cpp/build \
+cmake -S "$HOME/.unsloth/llama.cpp" \
+  -B "$HOME/.unsloth/llama.cpp/build" \
   -DGGML_CUDA=OFF \
   -DGGML_CURL=OFF \
   -DLLAMA_CURL=OFF \
   -DBUILD_SHARED_LIBS=OFF
 
 PATH=.venv-train/bin:$PATH \
-cmake --build /home/pawelo/.unsloth/llama.cpp/build \
+cmake --build "$HOME/.unsloth/llama.cpp/build" \
   --target llama-quantize \
   -j"$(nproc)"
 
-cp /home/pawelo/.unsloth/llama.cpp/build/bin/llama-quantize \
-  /home/pawelo/.unsloth/llama.cpp/llama-quantize
+cp "$HOME/.unsloth/llama.cpp/build/bin/llama-quantize" \
+  "$HOME/.unsloth/llama.cpp/llama-quantize"
 ```
 
 Manual conversion/quantization was then used from the merged HF output:
 
 ```bash
 PATH=.venv-train/bin:$PATH \
-.venv-train/bin/python /home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py \
+.venv-train/bin/python "$HOME/.unsloth/llama.cpp/convert_hf_to_gguf.py" \
   outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf \
   --outfile outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf/qwen35_9b_lichess_2000_pilot.BF16.gguf \
   --outtype bf16
 
-/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+"$HOME/.unsloth/llama.cpp/llama-quantize" \
   outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf/qwen35_9b_lichess_2000_pilot.BF16.gguf \
   outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf/qwen35_9b_lichess_2000_pilot.Q4_K_M.gguf \
   Q4_K_M
 
-/home/pawelo/.unsloth/llama.cpp/llama-quantize \
+"$HOME/.unsloth/llama.cpp/llama-quantize" \
   outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf/qwen35_9b_lichess_2000_pilot.BF16.gguf \
   outputs/finetune/qwen35_9b_lichess_2000_pilot_gguf/qwen35_9b_lichess_2000_pilot.Q8_0.gguf \
   Q8_0
