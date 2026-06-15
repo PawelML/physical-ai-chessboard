@@ -162,3 +162,13 @@ Keep type hints explicit (mypy strict). Frontend is TypeScript/React: PascalCase
 components, camelCase functions/state. Commits are short imperative summaries scoped
 to one behavior; note DB/prompt-version changes in PRs. Do not commit local DBs,
 model outputs, secrets, or machine-specific paths.
+
+## Gotchas
+
+- **`.env` file:** Can be read for configuration context (active providers, DB name, ports) — this is a development environment. Avoid echoing API keys or secrets back in responses.
+- **Playwright MCP screenshots:** Always save screenshots to `.playwright-mcp/screenshots/` directory (e.g., `.playwright-mcp/screenshots/screenshot-name.png`), never to the project root or other directories. This directory is already gitignored.
+- **Codex MCP (`mcp__codex-cli__codex` + `codex-reply`):**
+  - **ALWAYS pass `model: "gpt-5.5"`** — this is the required model for all Codex MCP calls. Do NOT omit the model parameter or use older models.
+  - Pass the full task description in the `prompt` parameter. Do not break tasks into multiple Codex calls — send one complete prompt per task.
+  - Reasoning effort via `config: {"model_reasoning_effort": "high"}` (default); available: `none` < `minimal` < `low` < `medium` < `high` < `xhigh`. Defaults in `~/.codex/config.toml`.
+  - Use `codex-reply` with `threadId` to continue an existing Codex conversation.
