@@ -5,8 +5,15 @@ import json
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
+from finetune._common import (
+    config_from_args,
+    run_prediction_eval,
+    update_eval_stats,
+    write_metrics_output,
+)
+from finetune._common import rate as _rate
 from finetune.chess_reward import RewardConfig, StockfishRewardScorer, require_stockfish_path
 from finetune.evaluate_lora import (
     _apply_chat_template,
@@ -76,33 +83,15 @@ class CPLEvalStats:
 def main() -> None:
     args = _parse_args()
     stockfish_path = require_stockfish_path(args.stockfish_path)
-    config = CPLEvalConfig(
-        dataset=str(args.dataset),
-        adapter_dir=str(args.adapter_dir),
-        output=str(args.output) if args.output is not None else None,
-        predictions_output=(
-            str(args.predictions_output) if args.predictions_output is not None else None
-        ),
-        limit=args.limit,
-        max_seq_length=args.max_seq_length,
-        max_new_tokens=args.max_new_tokens,
-        disable_thinking=args.disable_thinking,
-        stockfish_path=stockfish_path,
-        reward_nodes=args.reward_nodes,
-        reward_hash_mb=args.reward_hash_mb,
-        reward_mode=args.reward_mode,
-        tactical_good_cpl=args.tactical_good_cpl,
-        tactical_inaccuracy_cpl=args.tactical_inaccuracy_cpl,
-        tactical_blunder_cpl=args.tactical_blunder_cpl,
+    config = config_from_args(
+        CPLEvalConfig,
+        args,
+        overrides={"stockfish_path": stockfish_path},
     )
     stats = evaluate_cpl(config)
     payload = {"config": asdict(config), "metrics": stats.to_json()}
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_metrics_output(args.output, payload)
     print(json.dumps(payload["metrics"], indent=2, sort_keys=True))
 
 
@@ -133,38 +122,25 @@ def evaluate_cpl(config: CPLEvalConfig) -> CPLEvalStats:
         tactical_inaccuracy_cpl=config.tactical_inaccuracy_cpl,
         tactical_blunder_cpl=config.tactical_blunder_cpl,
     )
-    predictions_file: TextIO | None = None
-    stats = CPLEvalStats()
-    try:
-        if config.predictions_output is not None:
-            predictions_path = Path(config.predictions_output)
-            predictions_path.parent.mkdir(parents=True, exist_ok=True)
-            predictions_file = predictions_path.open("w", encoding="utf-8")
-
-        with StockfishRewardScorer(reward_config) as scorer:
-            with Path(config.dataset).open(encoding="utf-8") as dataset_file:
-                for line in dataset_file:
-                    if config.limit is not None and stats.examples >= config.limit:
-                        break
-                    row = json.loads(line)
-                    prediction = _evaluate_example(
-                        row=row,
-                        model=model,
-                        tokenizer=tokenizer,
-                        torch=torch,
-                        scorer=scorer,
-                        max_new_tokens=config.max_new_tokens,
-                        disable_thinking=config.disable_thinking,
-                    )
-                    _update_stats(stats=stats, prediction=prediction)
-                    if predictions_file is not None:
-                        predictions_file.write(
-                            json.dumps(prediction, separators=(",", ":")) + "\n"
-                        )
-    finally:
-        if predictions_file is not None:
-            predictions_file.close()
-    return stats
+    with StockfishRewardScorer(reward_config) as scorer:
+        return run_prediction_eval(
+            dataset_path=Path(config.dataset),
+            limit=config.limit,
+            predictions_output_path=(
+                Path(config.predictions_output) if config.predictions_output is not None else None
+            ),
+            stats=CPLEvalStats(),
+            predict=lambda row: _evaluate_example(
+                row=row,
+                model=model,
+                tokenizer=tokenizer,
+                torch=torch,
+                scorer=scorer,
+                max_new_tokens=config.max_new_tokens,
+                disable_thinking=config.disable_thinking,
+            ),
+            update_stats=_update_stats,
+        )
 
 
 def _evaluate_example(
@@ -213,10 +189,7 @@ def _evaluate_example(
 
 
 def _update_stats(*, stats: CPLEvalStats, prediction: dict[str, Any]) -> None:
-    stats.examples += 1
-    stats.json_parse_ok += int(prediction["parse_ok"])
-    stats.legal_move_ok += int(prediction["legal_ok"])
-    stats.top1_match += int(prediction["top1_match"])
+    update_eval_stats(stats, prediction)
     stats.malformed += int(not prediction["parse_ok"])
     stats.illegal += int(prediction["parse_ok"] and not prediction["legal_ok"])
     stats.blunders += int(prediction["classification"] == "blunder")
@@ -227,10 +200,6 @@ def _update_stats(*, stats: CPLEvalStats, prediction: dict[str, Any]) -> None:
     if isinstance(cpl, int):
         stats.cpl_sum += cpl
         stats.cpl_count += 1
-
-
-def _rate(numerator: int, denominator: int) -> float:
-    return numerator / denominator if denominator else 0.0
 
 
 def _parse_args() -> argparse.Namespace:

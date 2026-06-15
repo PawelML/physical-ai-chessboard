@@ -37,41 +37,41 @@ Repeated logic that has drifted or will drift. Ordered by payoff.
 
 ### Cross-module (`arena_core`)
 
-- [ ] **`_close_if_present` defined 3× identically** — ✓verified at `engine.py:571`, `tournaments.py:553`, `backend/main.py:1295` (same `getattr(x,"close",None)` + callable check). Define once (e.g. in `move_sources.py`) and import.
-- [ ] **`template_hash` == `text_hash`** — byte-identical `sha256(x.encode()).hexdigest()` at `prompts.py:42` and `persistence/repositories.py:33`. Collapse to one shared helper.
-- [ ] **Move-history rendering triplicated** — `_own_moves_for_side`/`_last_opponent_move(_for_side)` exist in `engine.py:503-515`, `finetune/build_dataset.py:371-395`, and `finetune/build_smoke_dataset.py:168-192` (identical). This is the load-bearing prompt-"memory" seam — promote one public helper and have all three call it.
+- [x] **`_close_if_present` defined 3× identically** — ✓verified at `engine.py:571`, `tournaments.py:553`, `backend/main.py:1295` (same `getattr(x,"close",None)` + callable check). Define once (e.g. in `move_sources.py`) and import.
+- [x] **`template_hash` == `text_hash`** — byte-identical `sha256(x.encode()).hexdigest()` at `prompts.py:42` and `persistence/repositories.py:33`. Collapse to one shared helper.
+- [x] **Move-history rendering triplicated** — `_own_moves_for_side`/`_last_opponent_move(_for_side)` exist in `engine.py:503-515`, `finetune/build_dataset.py:371-395`, and `finetune/build_smoke_dataset.py:168-192` (identical). This is the load-bearing prompt-"memory" seam — promote one public helper and have all three call it.
 
 ### `backend/main.py` (biggest single-file wins)
 
-- [ ] **`_GameMetrics` base model** — `LeaderboardRow`, `RunComparisonRow`, `ModelComparisonRow` (`main.py:303-426`) repeat a ~22-field metrics block (games/wins/draws/losses, rates + `_ci_low`/`_ci_high`, retries, latency, tokens…). Extract a base; the three become base + a few identifying fields. **~120 lines → one base + 3 small extensions.**
-- [ ] **`_CommonGameKnobs` base** — `StartGameRequest`/`StartStockfishMatchRequest`/`StartHumanGameRequest` (`main.py:99-143`) share a 9-field Ollama/sampling block, repeated a 4th time on `GameJob` and again when each handler builds `GameDefaults(...)` (`527-532,589-594,615-620`). One base + a `.sampling()` helper collapses all of it.
-- [ ] **`_game_list_item(row)` helper** — `list_games` and `list_run_games` build `GameListItem` from a `Game` row verbatim (`main.py:807-868`), and `_game_stream_payload` (`1129-1140`) hand-builds the same shape as a dict. One helper kills 3 copies and stops REST/SSE drift.
-- [ ] **`_run_job` lifecycle wrapper** — `_run_game_job` (`main.py:1407`) and `_run_stockfish_match_job` (`1484`) share the entire cancel/fail/`finally: tasks.pop`/finalize scaffold. Extract a wrapper taking the job-specific body. **~50 lines.**
-- [ ] **Unify `_comparison_row`/`_model_comparison_row`** (`main.py:1864-1994`) — identical `sum(...)` reductions, `wilson_interval` calls, and weighted-average calls; the model variant only adds snapshot + blunder fields. Factor the shared aggregation into one helper (or the `_GameMetrics` base).
+- [x] **`_GameMetrics` base model** — `LeaderboardRow`, `RunComparisonRow`, `ModelComparisonRow` (`main.py:303-426`) repeat a ~22-field metrics block (games/wins/draws/losses, rates + `_ci_low`/`_ci_high`, retries, latency, tokens…). Extract a base; the three become base + a few identifying fields. **~120 lines → one base + 3 small extensions.**
+- [x] **`_CommonGameKnobs` base** — `StartGameRequest`/`StartStockfishMatchRequest`/`StartHumanGameRequest` (`main.py:99-143`) share a 9-field Ollama/sampling block, repeated a 4th time on `GameJob` and again when each handler builds `GameDefaults(...)` (`527-532,589-594,615-620`). One base + a `.sampling()` helper collapses all of it.
+- [x] **`_game_list_item(row)` helper** — `list_games` and `list_run_games` build `GameListItem` from a `Game` row verbatim (`main.py:807-868`), and `_game_stream_payload` (`1129-1140`) hand-builds the same shape as a dict. One helper kills 3 copies and stops REST/SSE drift.
+- [x] **`_run_job` lifecycle wrapper** — `_run_game_job` (`main.py:1407`) and `_run_stockfish_match_job` (`1484`) share the entire cancel/fail/`finally: tasks.pop`/finalize scaffold. Extract a wrapper taking the job-specific body. **~50 lines.**
+- [x] **Unify `_comparison_row`/`_model_comparison_row`** (`main.py:1864-1994`) — identical `sum(...)` reductions, `wilson_interval` calls, and weighted-average calls; the model variant only adds snapshot + blunder fields. Factor the shared aggregation into one helper (or the `_GameMetrics` base).
 
 ### `frontend/src/App.tsx` (3017 lines — split it)
 
-- [ ] **Split into ~4 component files** (no rewrite, just move self-contained clusters):
+- [x] **Split into ~4 component files** (no rewrite, just move self-contained clusters):
   - `ModelComparison.tsx` — `ModelComparison` + `MATRIX_METRICS` + meta/config helpers (~430 lines, `App.tsx:2554-2991`).
   - `ChessBoard.tsx` — `ChessBoard` + `PlayerStrip` + `DragState`/`PromotionPrompt` + square/promotion helpers (~370 lines, `1667-2017`).
   - `RuntimePanel.tsx` — `RuntimePanel`/`PlayerRuntimeCard`/`ResourceMeter` + formatters.
   - `StartGamePanel.tsx` — `StartGamePanel` + `ModelInput` + `*JobOptions`/`jobLabel`.
   - Plus a shared `format.ts` (`percent`, `movesLabel`, `rateWithCi`, …). **Cuts the monolith roughly in half.**
-- [ ] **`StockfishLevelSelect` sub-component** — the level `<select>` (Beginner/Club) is written verbatim twice in `StartGamePanel` (`App.tsx:1188-1198` and `1234-1246`).
-- [ ] **Merge `postJson`/`putJson`** (`api.ts:356-388`) — byte-identical except the HTTP verb → `sendJson(method, ...)`.
-- [ ] **`resetToReplay(ply?)` callback** — the `setActiveLiveJobId(null); setActiveHumanGameId(null); setIsPlaying(false); setPlyIndex(...)` gesture is repeated across `PlyControls`/`GameList.onSelect`/`togglePlayback`/`MoveListPanel` (`setActiveLiveJobId(null)` appears 10×). Extract one callback.
+- [x] **`StockfishLevelSelect` sub-component** — the level `<select>` (Beginner/Club) is written verbatim twice in `StartGamePanel` (`App.tsx:1188-1198` and `1234-1246`).
+- [x] **Merge `postJson`/`putJson`** (`api.ts:356-388`) — byte-identical except the HTTP verb → `sendJson(method, ...)`.
+- [x] **`resetToReplay(ply?)` callback** — the `setActiveLiveJobId(null); setActiveHumanGameId(null); setIsPlaying(false); setPlyIndex(...)` gesture is repeated across `PlyControls`/`GameList.onSelect`/`togglePlayback`/`MoveListPanel` (`setActiveLiveJobId(null)` appears 10×). Extract one callback.
 
 ### `finetune/` (5 build_* + 3 evaluate_* scripts — heavy copy-paste)
 
-- [ ] **Create `finetune/_common.py`** for the leaf utilities copy-pasted across scripts (pure deletions, test-covered):
+- [x] **Create `finetune/_common.py`** for the leaf utilities copy-pasted across scripts (pure deletions, test-covered):
   - `_rate` — 4 copies (`chess_reward:437`, `evaluate_baseline:196`, `evaluate_cpl:232`, `evaluate_lora:222`).
   - `_is_legal_move` — identical in `evaluate_baseline:186` & `evaluate_lora:212` (+ inline in `chess_reward`).
   - `_read_jsonl` — identical in `build_mixed_tactical_dataset:110` & `build_tactical_gate:122`.
   - Stockfish worker init (`_init_worker` + `_WORKER_EVALUATOR`) — identical in `chess_reward:319` & `distill_dataset:213`.
   - `write_metadata_sidecar(path, config, stats)` — the `mkdir` + `write_text(json.dumps({"config":…,"stats":…}))` block repeated in 7+ `main()`s.
-- [ ] **Shared evaluator core** for `evaluate_baseline`/`_cpl`/`_lora` — same `*EvalStats` (examples + parse/legal/top1 counters & rates), same dataset-iteration + predictions-JSONL `try/finally` loop, same metrics-write/print scaffold. `evaluate_cpl` already imports tokenizer helpers from `evaluate_lora`, so the seam exists; `evaluate_cpl` just extends stats with CPL fields.
-- [ ] **Route `distill_dataset.py` through `chess_reward.require_stockfish_path`** (`distill_dataset:89-91` re-derives the path that `train_grpo`/`evaluate_cpl` already import) and the shared worker factory.
-- [ ] **Kill the args→dataclass→kwargs triplication** — worst in `train_grpo.py:64-103` (~35 fields declared in argparse, copied to `GRPOTrainConfig`, then passed positionally). A `config_from_args(DataclassType, args)` helper removes the field-by-field copies here and in `train_lora`/`evaluate_*`.
+- [x] **Shared evaluator core** for `evaluate_baseline`/`_cpl`/`_lora` — same `*EvalStats` (examples + parse/legal/top1 counters & rates), same dataset-iteration + predictions-JSONL `try/finally` loop, same metrics-write/print scaffold. `evaluate_cpl` already imports tokenizer helpers from `evaluate_lora`, so the seam exists; `evaluate_cpl` just extends stats with CPL fields.
+- [x] **Route `distill_dataset.py` through `chess_reward.require_stockfish_path`** (`distill_dataset:89-91` re-derives the path that `train_grpo`/`evaluate_cpl` already import) and the shared worker factory.
+- [x] **Kill the args→dataclass→kwargs triplication** — worst in `train_grpo.py:64-103` (~35 fields declared in argparse, copied to `GRPOTrainConfig`, then passed positionally). A `config_from_args(DataclassType, args)` helper removes the field-by-field copies here and in `train_lora`/`evaluate_*`.
 
 ---
 

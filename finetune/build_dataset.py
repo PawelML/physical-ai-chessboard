@@ -7,7 +7,7 @@ import sys
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import TextIO
@@ -16,6 +16,8 @@ import chess
 import chess.pgn
 
 from arena_core.prompts import STRICT_TEMPLATE_VERSION, LegalityMode, build_strict_prompt
+from arena_core.utils import last_opponent_move, own_moves_for_side
+from finetune._common import write_metadata_sidecar
 
 BLITZ_OR_SLOWER_SECONDS = 180
 ESTIMATED_GAME_INCREMENT_MOVES = 40
@@ -91,19 +93,7 @@ def main() -> None:
             rng=rng,
         )
     if args.metadata_output is not None:
-        args.metadata_output.parent.mkdir(parents=True, exist_ok=True)
-        args.metadata_output.write_text(
-            json.dumps(
-                {
-                    "config": asdict(config),
-                    "stats": stats.to_json(),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_metadata_sidecar(args.metadata_output, config=config, stats=stats)
     print(
         "Wrote "
         f"{stats.examples_train} train and {stats.examples_val} val examples "
@@ -251,12 +241,12 @@ def _write_game_examples(
             prompt = build_strict_prompt(
                 board=board,
                 san_history=san_history,
-                own_moves=_own_moves_for_side(
+                own_moves=own_moves_for_side(
                     san_history=san_history,
                     uci_history=uci_history,
                     side=mover,
                 ),
-                last_opponent_move=_last_opponent_move(
+                last_opponent_move=last_opponent_move(
                     san_history=san_history,
                     uci_history=uci_history,
                     side_to_move=mover,
@@ -366,33 +356,6 @@ def _evenly_spaced_indices(*, length: int, limit: int) -> list[int]:
     if limit == 1:
         return [length // 2]
     return sorted({round(index * (length - 1) / (limit - 1)) for index in range(limit)})
-
-
-def _own_moves_for_side(
-    *,
-    san_history: list[str],
-    uci_history: list[str],
-    side: chess.Color,
-) -> list[tuple[str, str]]:
-    start = 0 if side == chess.WHITE else 1
-    return list(zip(san_history[start::2], uci_history[start::2], strict=True))
-
-
-def _last_opponent_move(
-    *,
-    san_history: list[str],
-    uci_history: list[str],
-    side_to_move: chess.Color,
-) -> str | None:
-    if not san_history:
-        return None
-    last_move_was_white = len(san_history) % 2 == 1
-    opponent_just_moved = (
-        side_to_move == chess.BLACK and last_move_was_white
-    ) or (side_to_move == chess.WHITE and not last_move_was_white)
-    if not opponent_just_moved:
-        return None
-    return f"{san_history[-1]}/{uci_history[-1]}"
 
 
 def _game_id(*, game: chess.pgn.Game, moves: list[chess.Move]) -> str:

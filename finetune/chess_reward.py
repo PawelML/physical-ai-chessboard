@@ -13,13 +13,13 @@ import chess
 
 from arena_core.evaluators.stockfish import EngineEvaluation, StockfishEvaluator
 from arena_core.parser import parse_uci_json
+from finetune._common import init_stockfish_worker, stockfish_worker_evaluator
+from finetune._common import rate as _rate
 
 CPL_CAP = 300
 MALFORMED_REWARD = -1.0
 ILLEGAL_REWARD = -0.5
 TACTICAL_ILLEGAL_REWARD = -1.0
-
-_WORKER_EVALUATOR: StockfishEvaluator | None = None
 
 EvaluatorFactory = Callable[[], StockfishEvaluator]
 
@@ -272,7 +272,7 @@ class StockfishRewardScorer:
         if self._pool is None:
             self._pool = Pool(
                 processes=self.config.workers,
-                initializer=_init_worker,
+                initializer=init_stockfish_worker,
                 initargs=(
                     self.config.stockfish_path,
                     self.config.reward_nodes,
@@ -316,20 +316,9 @@ def require_stockfish_path(path: str | None) -> str:
     return resolved
 
 
-def _init_worker(stockfish_path: str, nodes: int, hash_mb: int) -> None:
-    global _WORKER_EVALUATOR
-    _WORKER_EVALUATOR = StockfishEvaluator(
-        binary_path=stockfish_path,
-        nodes=nodes,
-        threads=1,
-        hash_mb=hash_mb,
-    )
-
-
 def _score_worker_task(payload: tuple[str, str, RewardConfig]) -> RewardSample:
-    assert _WORKER_EVALUATOR is not None
     fen, uci, config = payload
-    return _score_with_evaluator(_WORKER_EVALUATOR, (fen, uci), config)
+    return _score_with_evaluator(stockfish_worker_evaluator(), (fen, uci), config)
 
 
 def _score_with_evaluator(
@@ -432,7 +421,3 @@ def _completion_from_messages(messages: Iterable[Any]) -> str:
         if message.get("role") == "assistant" and isinstance(message.get("content"), str):
             content_parts.append(str(message["content"]))
     return "\n".join(content_parts)
-
-
-def _rate(numerator: int, denominator: int) -> float:
-    return numerator / denominator if denominator else 0.0

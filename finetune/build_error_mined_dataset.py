@@ -6,9 +6,11 @@ import argparse
 import json
 import sqlite3
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from finetune._common import write_metadata_sidecar
 
 
 @dataclass(frozen=True)
@@ -61,17 +63,7 @@ def main() -> None:
     )
     stats = build_error_mined_dataset(config)
     if config.metadata_output is not None:
-        metadata_path = Path(config.metadata_output)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(
-            json.dumps(
-                {"config": asdict(config), "stats": stats.to_json()},
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_metadata_sidecar(Path(config.metadata_output), config=config, stats=stats)
     print(
         f"Wrote {stats.written}/{stats.candidates} error-mined rows to {config.output}; "
         f"dropped {stats.dropped_duplicate_fen} duplicate FENs."

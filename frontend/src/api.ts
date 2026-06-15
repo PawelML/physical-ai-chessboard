@@ -360,9 +360,9 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
+async function sendJson<T>(method: "POST" | "PUT", path: string, payload: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
@@ -373,17 +373,12 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  return sendJson<T>("POST", path, payload);
+}
+
 async function putJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${message}`);
-  }
-  return response.json() as Promise<T>;
+  return sendJson<T>("PUT", path, payload);
 }
 
 export function fetchGames(): Promise<GameListItem[]> {

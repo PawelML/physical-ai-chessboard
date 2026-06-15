@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from finetune._common import config_from_args, write_metrics_output
 from finetune.chess_reward import RewardConfig, StockfishRewardScorer, require_stockfish_path
 from finetune.evaluate_lora import _apply_chat_template
 
@@ -64,41 +64,13 @@ class GRPOTrainConfig:
 def main() -> None:
     args = _parse_args()
     stockfish_path = require_stockfish_path(args.stockfish_path)
-    config = GRPOTrainConfig(
-        train_dataset=str(args.train_dataset),
-        output_dir=str(args.output_dir),
-        model=args.model,
-        distilled_adapter_dir=str(args.distilled_adapter_dir),
-        merged_model_dir=str(args.merged_model_dir),
-        initial_adapter_dir=str(args.initial_adapter_dir) if args.initial_adapter_dir else None,
-        auto_merge_distilled=not args.no_auto_merge_distilled,
-        max_seq_length=args.max_seq_length,
-        max_prompt_length=args.max_prompt_length,
-        max_completion_length=args.max_completion_length,
-        max_steps=args.max_steps,
-        num_train_epochs=args.num_train_epochs,
-        learning_rate=args.learning_rate,
-        beta=args.beta,
-        num_generations=args.num_generations,
-        temperature=args.temperature,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        warmup_ratio=args.warmup_ratio,
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        seed=args.seed,
-        limit=args.limit,
-        reward_nodes=args.reward_nodes,
-        reward_workers=args.reward_workers,
-        reward_hash_mb=args.reward_hash_mb,
-        reward_mode=args.reward_mode,
-        tactical_good_cpl=args.tactical_good_cpl,
-        tactical_inaccuracy_cpl=args.tactical_inaccuracy_cpl,
-        tactical_blunder_cpl=args.tactical_blunder_cpl,
-        stockfish_path=stockfish_path,
+    config = config_from_args(
+        GRPOTrainConfig,
+        args,
+        overrides={
+            "auto_merge_distilled": not args.no_auto_merge_distilled,
+            "stockfish_path": stockfish_path,
+        },
     )
     train(config)
 
@@ -123,10 +95,7 @@ def train(config: GRPOTrainConfig) -> None:
 
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "grpo_config.json").write_text(
-        json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_metrics_output(output_dir / "grpo_config.json", asdict(config))
 
     merged_model_dir = Path(config.merged_model_dir)
     if not _looks_like_hf_checkpoint(merged_model_dir):

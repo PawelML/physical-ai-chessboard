@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any
+
+from finetune._common import config_from_args, write_metrics_output
 
 DEFAULT_MODEL = "unsloth/Qwen3.5-9B"
 DEFAULT_INSTRUCTION_PART = "<|im_start|>user\n"
@@ -39,29 +40,7 @@ class TrainConfig:
 
 def main() -> None:
     args = _parse_args()
-    config = TrainConfig(
-        train_dataset=str(args.train_dataset),
-        eval_dataset=str(args.eval_dataset) if args.eval_dataset is not None else None,
-        output_dir=str(args.output_dir),
-        model=args.model,
-        max_seq_length=args.max_seq_length,
-        max_steps=args.max_steps,
-        num_train_epochs=args.num_train_epochs,
-        learning_rate=args.learning_rate,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        warmup_ratio=args.warmup_ratio,
-        logging_steps=args.logging_steps,
-        eval_steps=args.eval_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        seed=args.seed,
-        instruction_part=args.instruction_part,
-        response_part=args.response_part,
-    )
+    config = config_from_args(TrainConfig, args)
     train(config)
 
 
@@ -85,10 +64,7 @@ def train(config: TrainConfig) -> None:
 
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "train_config.json").write_text(
-        json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_metrics_output(output_dir / "train_config.json", asdict(config))
 
     model, tokenizer = FastModel.from_pretrained(
         model_name=config.model,

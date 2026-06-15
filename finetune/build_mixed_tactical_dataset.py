@@ -6,9 +6,11 @@ import argparse
 import json
 import random
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from finetune._common import read_jsonl, write_metadata_sidecar
 
 
 @dataclass(frozen=True)
@@ -51,24 +53,14 @@ def main() -> None:
     )
     stats = build_mixed_tactical_dataset(config)
     if config.metadata_output is not None:
-        metadata_path = Path(config.metadata_output)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(
-            json.dumps(
-                {"config": asdict(config), "stats": stats.to_json()},
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_metadata_sidecar(Path(config.metadata_output), config=config, stats=stats)
     print(f"Wrote {stats.output_rows} mixed tactical rows to {config.output}.")
 
 
 def build_mixed_tactical_dataset(config: MixedTacticalConfig) -> MixedTacticalStats:
     rng = random.Random(config.seed)
-    broad_rows = _read_jsonl(Path(config.broad_dataset))
-    tactical_rows = _read_jsonl(Path(config.tactical_dataset))
+    broad_rows = read_jsonl(Path(config.broad_dataset))
+    tactical_rows = read_jsonl(Path(config.tactical_dataset))
 
     stats = MixedTacticalStats(
         broad_input_rows=len(broad_rows),
@@ -105,11 +97,6 @@ def _normalize_row(row: dict[str, Any], *, source: str) -> dict[str, str]:
         "move": str(row.get("move") or ""),
         "source": source,
     }
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    with path.open(encoding="utf-8") as input_file:
-        return [json.loads(line) for line in input_file if line.strip()]
 
 
 def _parse_args() -> argparse.Namespace:

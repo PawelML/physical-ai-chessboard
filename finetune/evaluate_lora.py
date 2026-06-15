@@ -5,11 +5,12 @@ import json
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Any, TextIO
-
-import chess
+from typing import Any
 
 from arena_core.parser import parse_uci_json
+from finetune._common import config_from_args, run_prediction_eval, write_metrics_output
+from finetune._common import is_legal_move as _is_legal_move
+from finetune._common import rate as _rate
 
 
 @dataclass(frozen=True)
@@ -45,29 +46,14 @@ class LoraEvalStats:
 
 def main() -> None:
     args = _parse_args()
-    config = LoraEvalConfig(
-        dataset=str(args.dataset),
-        adapter_dir=str(args.adapter_dir),
-        output=str(args.output) if args.output is not None else None,
-        predictions_output=(
-            str(args.predictions_output) if args.predictions_output is not None else None
-        ),
-        limit=args.limit,
-        max_seq_length=args.max_seq_length,
-        max_new_tokens=args.max_new_tokens,
-        disable_thinking=args.disable_thinking,
-    )
+    config = config_from_args(LoraEvalConfig, args)
     stats = evaluate_lora(config)
     payload = {
         "config": asdict(config),
         "metrics": stats.to_json(),
     }
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_metrics_output(args.output, payload)
     print(json.dumps(payload["metrics"], indent=2, sort_keys=True))
 
 
@@ -88,37 +74,22 @@ def evaluate_lora(config: LoraEvalConfig) -> LoraEvalStats:
     )
     model.eval()
 
-    predictions_file: TextIO | None = None
-    stats = LoraEvalStats()
-    try:
-        if config.predictions_output is not None:
-            predictions_path = Path(config.predictions_output)
-            predictions_path.parent.mkdir(parents=True, exist_ok=True)
-            predictions_file = predictions_path.open("w", encoding="utf-8")
-
-        with Path(config.dataset).open(encoding="utf-8") as dataset_file:
-            for line in dataset_file:
-                if config.limit is not None and stats.examples >= config.limit:
-                    break
-                row = json.loads(line)
-                prediction = _evaluate_example(
-                    row=row,
-                    model=model,
-                    tokenizer=tokenizer,
-                    torch=torch,
-                    max_new_tokens=config.max_new_tokens,
-                    disable_thinking=config.disable_thinking,
-                )
-                stats.examples += 1
-                stats.json_parse_ok += int(prediction["parse_ok"])
-                stats.legal_move_ok += int(prediction["legal_ok"])
-                stats.top1_match += int(prediction["top1_match"])
-                if predictions_file is not None:
-                    predictions_file.write(json.dumps(prediction, separators=(",", ":")) + "\n")
-    finally:
-        if predictions_file is not None:
-            predictions_file.close()
-    return stats
+    return run_prediction_eval(
+        dataset_path=Path(config.dataset),
+        limit=config.limit,
+        predictions_output_path=(
+            Path(config.predictions_output) if config.predictions_output is not None else None
+        ),
+        stats=LoraEvalStats(),
+        predict=lambda row: _evaluate_example(
+            row=row,
+            model=model,
+            tokenizer=tokenizer,
+            torch=torch,
+            max_new_tokens=config.max_new_tokens,
+            disable_thinking=config.disable_thinking,
+        ),
+    )
 
 
 def _evaluate_example(
@@ -207,20 +178,6 @@ def _token_id(*, tokenizer: Any, name: str) -> int | None:
         return None
     inner_value = getattr(inner_tokenizer, name, None)
     return int(inner_value) if inner_value is not None else None
-
-
-def _is_legal_move(*, fen: str, move_text: str | None) -> bool:
-    if move_text is None:
-        return False
-    try:
-        move = chess.Move.from_uci(move_text)
-    except ValueError:
-        return False
-    return move in chess.Board(fen).legal_moves
-
-
-def _rate(numerator: int, denominator: int) -> float:
-    return numerator / denominator if denominator else 0.0
 
 
 def _parse_args() -> argparse.Namespace:

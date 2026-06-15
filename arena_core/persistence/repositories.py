@@ -1,5 +1,3 @@
-from hashlib import sha256
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +26,3 @@ async def ensure_prompt(session: AsyncSession, prompt: BuiltPrompt) -> models.Pr
     session.add(row)
     await session.flush()
     return row
-
-
-def text_hash(text: str) -> str:
-    return sha256(text.encode("utf-8")).hexdigest()

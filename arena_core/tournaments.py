@@ -18,6 +18,7 @@ from arena_core.persistence import models
 from arena_core.persistence.repositories import ensure_prompt
 from arena_core.prompts import LegalityMode, build_strict_prompt
 from arena_core.telemetry import estimate_pair_footprint
+from arena_core.utils import close_if_present
 
 SourceFactory = Callable[..., MoveSource]
 
@@ -195,7 +196,7 @@ async def run_tournament(
                 if isawaitable(callback_result):
                     await callback_result
     finally:
-        _close_if_present(evaluator)
+        close_if_present(evaluator)
     return TournamentResult(run_id=run.id, config_hash=config_hash, game_ids=game_ids)
 
 
@@ -548,13 +549,6 @@ def _stockfish_version(evaluator: MoveEvaluator | None) -> str | None:
         return None
     version = getattr(evaluator, "version", None)
     return version if isinstance(version, str) else None
-
-
-def _close_if_present(item: object) -> None:
-    close = getattr(item, "close", None)
-    if callable(close):
-        close()
-
 
 def _git_commit() -> str | None:
     try:

@@ -2,7 +2,7 @@ import asyncio
 import json
 import shutil
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +41,7 @@ from arena_core.persistence.models import (
 from arena_core.reports import export_game_report
 from arena_core.stats import wilson_interval
 from arena_core.tournaments import TournamentConfig, run_tournament
+from arena_core.utils import close_if_present
 
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
@@ -62,21 +63,28 @@ class GameDefaults(BaseModel):
     num_predict: int | None = Field(default=None, gt=0)
 
 
-class GameJob(BaseModel):
+class _CommonGameKnobs(GameDefaults):
+    legality_mode: Literal["open", "constrained"] = "constrained"
+    ollama_thinking: bool = False
+    ollama_cpu_offload: bool = False
+    guidance_mode: GuidanceMode = "legal_list"
+    max_plies: int | None = None
+
+    def sampling(self) -> GameDefaults:
+        return GameDefaults(
+            temperature=self.temperature,
+            top_p=self.top_p,
+            num_ctx=self.num_ctx,
+            num_predict=self.num_predict,
+        )
+
+
+class GameJob(_CommonGameKnobs):
     id: str
     status: GameJobStatus
     kind: JobKind = "game"
     white: str
     black: str
-    legality_mode: str
-    temperature: float = 0.0
-    top_p: float | None = None
-    num_ctx: int | None = None
-    num_predict: int | None = None
-    ollama_thinking: bool = False
-    ollama_cpu_offload: bool = False
-    guidance_mode: GuidanceMode
-    max_plies: int | None
     stockfish_level: StockfishLevel | None = None
     games_requested: int | None = None
     games_completed: int = 0
@@ -96,50 +104,23 @@ class ModelOption(BaseModel):
     provider: str
 
 
-class StartGameRequest(BaseModel):
+class StartGameRequest(_CommonGameKnobs):
     white: str
     black: str
-    legality_mode: Literal["open", "constrained"] = "constrained"
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
-    num_ctx: int | None = Field(default=None, gt=0)
-    num_predict: int | None = Field(default=None, gt=0)
-    ollama_thinking: bool = False
-    ollama_cpu_offload: bool = False
-    guidance_mode: GuidanceMode = "legal_list"
-    max_plies: int | None = None
     stockfish_path: str | None = None
 
 
-class StartStockfishMatchRequest(BaseModel):
+class StartStockfishMatchRequest(_CommonGameKnobs):
     model: str
     stockfish_level: StockfishLevel = "beginner"
     game_count: int = Field(default=4, ge=1, le=200)
-    legality_mode: Literal["open", "constrained"] = "constrained"
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
-    num_ctx: int | None = Field(default=None, gt=0)
-    num_predict: int | None = Field(default=None, gt=0)
-    ollama_thinking: bool = False
-    ollama_cpu_offload: bool = False
-    guidance_mode: GuidanceMode = "legal_list"
-    max_plies: int | None = None
     stockfish_path: str | None = None
 
 
-class StartHumanGameRequest(BaseModel):
+class StartHumanGameRequest(_CommonGameKnobs):
     human_color: HumanColor = "white"
     opponent: str
     stockfish_level: StockfishLevel | None = None
-    legality_mode: Literal["open", "constrained"] = "constrained"
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
-    num_ctx: int | None = Field(default=None, gt=0)
-    num_predict: int | None = Field(default=None, gt=0)
-    ollama_thinking: bool = False
-    ollama_cpu_offload: bool = False
-    guidance_mode: GuidanceMode = "legal_list"
-    max_plies: int | None = None
     stockfish_path: str | None = None
 
 
@@ -291,16 +272,7 @@ class GameDetail(BaseModel):
     moves: list[MoveOut]
 
 
-class LeaderboardRow(BaseModel):
-    id: int
-    run_id: int
-    run_participant_id: int
-    participant: str
-    model_snapshot_id: int | None
-    color: str
-    mode: str
-    legality_mode: str
-    opening_suite_id: int | None
+class _GameMetrics(BaseModel):
     games_played: int
     wins: int
     draws: int
@@ -310,9 +282,6 @@ class LeaderboardRow(BaseModel):
     avg_cpl: float | None
     evaluated_move_count: int
     accuracy_rate: float
-    blunders: int
-    mistakes: int
-    inaccuracies: int
     attempt_count: int
     illegal_attempts: int
     malformed_attempts: int
@@ -327,9 +296,27 @@ class LeaderboardRow(BaseModel):
     win_rate_ci_high: float
     low_sample: bool
     avg_retries: float
-    forfeit_invalid_count: int
     avg_latency_ms: float
     total_tokens: int
+
+
+class _ClassifiedGameMetrics(_GameMetrics):
+    blunders: int
+    mistakes: int
+    inaccuracies: int
+    forfeit_invalid_count: int
+
+
+class LeaderboardRow(_ClassifiedGameMetrics):
+    id: int
+    run_id: int
+    run_participant_id: int
+    participant: str
+    model_snapshot_id: int | None
+    color: str
+    mode: str
+    legality_mode: str
+    opening_suite_id: int | None
 
 
 class OperationalEventOut(BaseModel):
@@ -342,36 +329,11 @@ class OperationalEventOut(BaseModel):
     created_at: str
 
 
-class RunComparisonRow(BaseModel):
+class RunComparisonRow(_GameMetrics):
     run_id: int
-    games_played: int
-    wins: int
-    draws: int
-    losses: int
-    unfinished: int
-    avg_game_plies: float
-    avg_cpl: float | None
-    evaluated_move_count: int
-    accuracy_rate: float
-    attempt_count: int
-    illegal_attempts: int
-    malformed_attempts: int
-    illegal_rate: float
-    illegal_rate_ci_low: float
-    illegal_rate_ci_high: float
-    malformed_rate: float
-    malformed_rate_ci_low: float
-    malformed_rate_ci_high: float
-    win_rate: float
-    win_rate_ci_low: float
-    win_rate_ci_high: float
-    low_sample: bool
-    avg_retries: float
-    avg_latency_ms: float
-    total_tokens: int
 
 
-class ModelComparisonRow(BaseModel):
+class ModelComparisonRow(_ClassifiedGameMetrics):
     model_key: str
     label: str
     model_snapshot_id: int | None
@@ -386,35 +348,6 @@ class ModelComparisonRow(BaseModel):
     legality_mode: str
     color: str
     run_count: int
-    games_played: int
-    wins: int
-    draws: int
-    losses: int
-    unfinished: int
-    avg_game_plies: float
-    avg_cpl: float | None
-    evaluated_move_count: int
-    accuracy_rate: float
-    blunders: int
-    mistakes: int
-    inaccuracies: int
-    attempt_count: int
-    illegal_attempts: int
-    malformed_attempts: int
-    illegal_rate: float
-    illegal_rate_ci_low: float
-    illegal_rate_ci_high: float
-    malformed_rate: float
-    malformed_rate_ci_low: float
-    malformed_rate_ci_high: float
-    win_rate: float
-    win_rate_ci_low: float
-    win_rate_ci_high: float
-    low_sample: bool
-    avg_retries: float
-    forfeit_invalid_count: int
-    avg_latency_ms: float
-    total_tokens: int
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -515,12 +448,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 white=white,
                 black=black,
                 legality_mode=payload.legality_mode,
-                sampling=GameDefaults(
-                    temperature=payload.temperature,
-                    top_p=payload.top_p,
-                    num_ctx=payload.num_ctx,
-                    num_predict=payload.num_predict,
-                ),
+                sampling=payload.sampling(),
                 ollama_thinking=payload.ollama_thinking,
                 ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
@@ -577,12 +505,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 level=payload.stockfish_level,
                 game_count=payload.game_count,
                 legality_mode=payload.legality_mode,
-                sampling=GameDefaults(
-                    temperature=payload.temperature,
-                    top_p=payload.top_p,
-                    num_ctx=payload.num_ctx,
-                    num_predict=payload.num_predict,
-                ),
+                sampling=payload.sampling(),
                 ollama_thinking=payload.ollama_thinking,
                 ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
@@ -603,12 +526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         base_settings = _settings_for_ollama_options(
             effective_settings,
-            sampling=GameDefaults(
-                temperature=payload.temperature,
-                top_p=payload.top_p,
-                num_ctx=payload.num_ctx,
-                num_predict=payload.num_predict,
-            ),
+            sampling=payload.sampling(),
             thinking=payload.ollama_thinking,
             cpu_offload=payload.ollama_cpu_offload,
         )
@@ -752,7 +670,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         result="*",
                     )
                     await session.commit()
-            _close_if_present(runtime.opponent_source)
+            close_if_present(runtime.opponent_source)
             human_runtimes.pop(human_game_id, None)
             human_games[human_game_id] = state.model_copy(
                 update={
@@ -794,18 +712,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows = (
                 await session.execute(select(Game).order_by(Game.started_at.desc(), Game.id.desc()))
             ).scalars()
-            return [
-                GameListItem(
-                    id=row.id,
-                    run_id=row.run_id,
-                    result=row.result,
-                    termination_reason=row.termination_reason,
-                    final_fen=row.final_fen,
-                    started_at=row.started_at.isoformat(),
-                    ended_at=row.ended_at.isoformat() if row.ended_at else None,
-                )
-                for row in rows
-            ]
+            return [_game_list_item(row) for row in rows]
 
     @api.get("/runs/{run_id}/events")
     async def list_run_events(run_id: int) -> list[OperationalEventOut]:
@@ -1064,19 +971,20 @@ async def _game_stream_payload(
                 select(Game).order_by(Game.started_at.desc(), Game.id.desc()).limit(20)
             )
         ).scalars()
-        games = [
-            {
-                "id": row.id,
-                "run_id": row.run_id,
-                "result": row.result,
-                "termination_reason": row.termination_reason,
-                "final_fen": row.final_fen,
-                "started_at": row.started_at.isoformat(),
-                "ended_at": row.ended_at.isoformat() if row.ended_at else None,
-            }
-            for row in rows
-        ]
+        games = [_game_list_item(row).model_dump() for row in rows]
     return {"games": games}
+
+
+def _game_list_item(row: Game) -> GameListItem:
+    return GameListItem(
+        id=row.id,
+        run_id=row.run_id,
+        result=row.result,
+        termination_reason=row.termination_reason,
+        final_fen=row.final_fen,
+        started_at=row.started_at.isoformat(),
+        ended_at=row.ended_at.isoformat() if row.ended_at else None,
+    )
 
 
 class _HumanApiMoveSource:
@@ -1147,7 +1055,7 @@ async def _commit_or_finish_human_game(
     if is_finished and termination_reason is not None:
         runtime.arena.finish(game_row, termination_reason=termination_reason)
         await session.commit()
-        _close_if_present(runtime.opponent_source)
+        close_if_present(runtime.opponent_source)
         runtimes.pop(state_id, None)
         states[state_id] = _human_game_state(
             human_game_id=state_id,
@@ -1201,7 +1109,7 @@ async def _play_opponent_until_human_turn(
                 if not accepted:
                     runtime.arena.finish(game_row, termination_reason="forfeit_invalid")
                     await session.commit()
-                    _close_if_present(runtime.opponent_source)
+                    close_if_present(runtime.opponent_source)
                     runtimes.pop(human_game_id, None)
                     states[human_game_id] = _human_game_state(
                         human_game_id=human_game_id,
@@ -1228,12 +1136,6 @@ async def _play_opponent_until_human_turn(
                 if new_state.status != "running":
                     return new_state
     return states[human_game_id]
-
-
-def _close_if_present(source: object) -> None:
-    close = getattr(source, "close", None)
-    if callable(close):
-        close()
 
 
 async def _ollama_model_options(settings: Settings) -> list[ModelOption]:
@@ -1359,7 +1261,7 @@ async def _run_game_job(
     max_plies: int | None,
     stockfish_path: str | None,
 ) -> None:
-    try:
+    async def run() -> dict[str, object]:
         def mark_game_started(game_id: int) -> None:
             jobs[job_id] = jobs[job_id].model_copy(update={"game_id": game_id})
 
@@ -1380,43 +1282,22 @@ async def _run_game_job(
             commit_after_each_ply=True,
             on_game_started=mark_game_started,
         )
-    except asyncio.CancelledError:
-        job = jobs.get(job_id)
-        if job is not None:
-            if job.game_id is not None:
-                await _mark_game_cancelled(session_factory, game_id=job.game_id)
-            jobs[job_id] = job.model_copy(
-                update={
-                    "status": "cancelled",
-                    "termination_reason": "aborted_by_user",
-                    "completed_at": job.completed_at or _utcnow_iso(),
-                }
-            )
-        raise
-    except Exception as exc:
-        jobs[job_id] = jobs[job_id].model_copy(
-            update={
-                "status": "failed",
-                "error": str(exc) or type(exc).__name__,
-                "completed_at": _utcnow_iso(),
-            }
-        )
-        return
-    finally:
-        tasks.pop(job_id, None)
+        return {
+            "game_id": result.game_id,
+            "game_ids": [result.game_id],
+            "games_completed": 1,
+            "result": result.result,
+            "termination_reason": result.termination_reason,
+        }
 
-    if jobs[job_id].status == "running":
-        jobs[job_id] = jobs[job_id].model_copy(
-            update={
-                "status": "completed",
-                "game_id": result.game_id,
-                "game_ids": [result.game_id],
-                "games_completed": 1,
-                "result": result.result,
-                "termination_reason": result.termination_reason,
-                "completed_at": _utcnow_iso(),
-            }
-        )
+    await _run_job(
+        job_id=job_id,
+        jobs=jobs,
+        tasks=tasks,
+        session_factory=session_factory,
+        cancel_current_game=True,
+        run=run,
+    )
 
 
 async def _run_stockfish_match_job(
@@ -1437,7 +1318,7 @@ async def _run_stockfish_match_job(
     max_plies: int | None,
     stockfish_path: str,
 ) -> None:
-    try:
+    async def run() -> dict[str, object]:
         await create_tables(settings.database_url)
         stockfish_settings = _settings_for_stockfish_level(
             _settings_for_ollama_options(
@@ -1521,9 +1402,41 @@ async def _run_stockfish_match_job(
                         },
                     )
                 )
+        return {
+            "run_id": result.run_id,
+            "game_id": result.game_ids[-1] if result.game_ids else None,
+            "game_ids": result.game_ids,
+            "games_completed": len(result.game_ids),
+            "result": "summary",
+            "termination_reason": "completed",
+        }
+
+    await _run_job(
+        job_id=job_id,
+        jobs=jobs,
+        tasks=tasks,
+        session_factory=session_factory,
+        cancel_current_game=False,
+        run=run,
+    )
+
+
+async def _run_job(
+    *,
+    job_id: str,
+    jobs: dict[str, GameJob],
+    tasks: dict[str, asyncio.Task[None]],
+    session_factory: async_sessionmaker[AsyncSession],
+    cancel_current_game: bool,
+    run: Callable[[], Awaitable[dict[str, object]]],
+) -> None:
+    try:
+        success_update = await run()
     except asyncio.CancelledError:
         job = jobs.get(job_id)
         if job is not None:
+            if cancel_current_game and job.game_id is not None:
+                await _mark_game_cancelled(session_factory, game_id=job.game_id)
             jobs[job_id] = job.model_copy(
                 update={
                     "status": "cancelled",
@@ -1548,12 +1461,7 @@ async def _run_stockfish_match_job(
         jobs[job_id] = jobs[job_id].model_copy(
             update={
                 "status": "completed",
-                "run_id": result.run_id,
-                "game_id": result.game_ids[-1] if result.game_ids else None,
-                "game_ids": result.game_ids,
-                "games_completed": len(result.game_ids),
-                "result": "summary",
-                "termination_reason": "completed",
+                **success_update,
                 "completed_at": _utcnow_iso(),
             }
         )
@@ -1800,6 +1708,10 @@ def _operational_event_out(row: OperationalEvent) -> OperationalEventOut:
 
 
 def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
+    return RunComparisonRow(run_id=run_id, **_game_metrics_update(rows))
+
+
+def _game_metrics_update(rows: list[GameSummary]) -> dict[str, object]:
     games_played = sum(row.games_played for row in rows)
     wins = sum(row.wins for row in rows)
     draws = sum(row.draws for row in rows)
@@ -1819,40 +1731,41 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
         malformed_attempts,
         attempt_count,
     )
-    return RunComparisonRow(
-        run_id=run_id,
-        games_played=games_played,
-        wins=wins,
-        draws=draws,
-        losses=losses,
-        unfinished=unfinished,
-        avg_cpl=_weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
-        avg_game_plies=_weighted_average(
+    return {
+        "games_played": games_played,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "unfinished": unfinished,
+        "avg_cpl": _weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
+        "avg_game_plies": _weighted_average(
             [(row.avg_game_plies, row.games_played) for row in rows]
         ),
-        evaluated_move_count=evaluated_move_count,
-        accuracy_rate=_weighted_average(
+        "evaluated_move_count": evaluated_move_count,
+        "accuracy_rate": _weighted_average(
             [(row.accuracy_rate, row.evaluated_move_count) for row in rows]
         ),
-        attempt_count=attempt_count,
-        illegal_attempts=illegal_attempts,
-        malformed_attempts=malformed_attempts,
-        illegal_rate=_weighted_average([(row.illegal_rate, row.attempt_count) for row in rows]),
-        illegal_rate_ci_low=illegal_rate_ci_low,
-        illegal_rate_ci_high=illegal_rate_ci_high,
-        malformed_rate=_weighted_average(
+        "attempt_count": attempt_count,
+        "illegal_attempts": illegal_attempts,
+        "malformed_attempts": malformed_attempts,
+        "illegal_rate": _weighted_average([(row.illegal_rate, row.attempt_count) for row in rows]),
+        "illegal_rate_ci_low": illegal_rate_ci_low,
+        "illegal_rate_ci_high": illegal_rate_ci_high,
+        "malformed_rate": _weighted_average(
             [(row.malformed_rate, row.attempt_count) for row in rows]
         ),
-        malformed_rate_ci_low=malformed_rate_ci_low,
-        malformed_rate_ci_high=malformed_rate_ci_high,
-        win_rate=wins / games_played if games_played else 0.0,
-        win_rate_ci_low=win_rate_ci_low,
-        win_rate_ci_high=win_rate_ci_high,
-        low_sample=games_played < 10,
-        avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),
-        avg_latency_ms=_weighted_average([(row.avg_latency_ms, row.games_played) for row in rows]),
-        total_tokens=total_tokens,
-    )
+        "malformed_rate_ci_low": malformed_rate_ci_low,
+        "malformed_rate_ci_high": malformed_rate_ci_high,
+        "win_rate": wins / games_played if games_played else 0.0,
+        "win_rate_ci_low": win_rate_ci_low,
+        "win_rate_ci_high": win_rate_ci_high,
+        "low_sample": games_played < 10,
+        "avg_retries": _weighted_average([(row.avg_retries, row.games_played) for row in rows]),
+        "avg_latency_ms": _weighted_average(
+            [(row.avg_latency_ms, row.games_played) for row in rows]
+        ),
+        "total_tokens": total_tokens,
+    }
 
 
 def _model_comparison_row(
@@ -1868,21 +1781,6 @@ def _model_comparison_row(
     # "when was this benchmarked" signal the matrix sorts/disambiguates on, distinct
     # from when the snapshot was first registered.
     run_dates = sorted(run.created_at for _, _, _, run in pairs)
-    games_played = sum(row.games_played for row in rows)
-    wins = sum(row.wins for row in rows)
-    draws = sum(row.draws for row in rows)
-    losses = sum(row.losses for row in rows)
-    unfinished = sum(row.unfinished for row in rows)
-    total_tokens = sum(row.total_tokens for row in rows)
-    evaluated_move_count = sum(row.evaluated_move_count for row in rows)
-    attempt_count = sum(row.attempt_count for row in rows)
-    illegal_attempts = sum(row.illegal_attempts for row in rows)
-    malformed_attempts = sum(row.malformed_attempts for row in rows)
-    win_rate_ci_low, win_rate_ci_high = wilson_interval(wins, games_played)
-    illegal_rate_ci_low, illegal_rate_ci_high = wilson_interval(illegal_attempts, attempt_count)
-    malformed_rate_ci_low, malformed_rate_ci_high = wilson_interval(
-        malformed_attempts, attempt_count
-    )
     return ModelComparisonRow(
         model_key=key,
         label=participant.display_name,
@@ -1898,37 +1796,11 @@ def _model_comparison_row(
         legality_mode=rows[0].legality_mode,
         color=color,
         run_count=len(run_ids),
-        games_played=games_played,
-        wins=wins,
-        draws=draws,
-        losses=losses,
-        unfinished=unfinished,
-        avg_game_plies=_weighted_average([(row.avg_game_plies, row.games_played) for row in rows]),
-        avg_cpl=_weighted_nullable_average([(row.avg_cpl, row.games_played) for row in rows]),
-        evaluated_move_count=evaluated_move_count,
-        accuracy_rate=_weighted_average(
-            [(row.accuracy_rate, row.evaluated_move_count) for row in rows]
-        ),
+        **_game_metrics_update(rows),
         blunders=sum(row.blunders for row in rows),
         mistakes=sum(row.mistakes for row in rows),
         inaccuracies=sum(row.inaccuracies for row in rows),
-        attempt_count=attempt_count,
-        illegal_attempts=illegal_attempts,
-        malformed_attempts=malformed_attempts,
-        illegal_rate=_weighted_average([(row.illegal_rate, row.attempt_count) for row in rows]),
-        illegal_rate_ci_low=illegal_rate_ci_low,
-        illegal_rate_ci_high=illegal_rate_ci_high,
-        malformed_rate=_weighted_average([(row.malformed_rate, row.attempt_count) for row in rows]),
-        malformed_rate_ci_low=malformed_rate_ci_low,
-        malformed_rate_ci_high=malformed_rate_ci_high,
-        win_rate=wins / games_played if games_played else 0.0,
-        win_rate_ci_low=win_rate_ci_low,
-        win_rate_ci_high=win_rate_ci_high,
-        low_sample=games_played < 10,
-        avg_retries=_weighted_average([(row.avg_retries, row.games_played) for row in rows]),
         forfeit_invalid_count=sum(row.forfeit_invalid_count for row in rows),
-        avg_latency_ms=_weighted_average([(row.avg_latency_ms, row.games_played) for row in rows]),
-        total_tokens=total_tokens,
     )
 
 

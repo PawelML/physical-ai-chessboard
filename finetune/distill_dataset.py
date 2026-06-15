@@ -24,7 +24,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from hashlib import sha256
 from multiprocessing import Pool
 from pathlib import Path
@@ -32,11 +32,14 @@ from typing import TextIO
 
 import chess
 
-from arena_core.evaluators.stockfish import StockfishEvaluator
+from finetune._common import (
+    init_stockfish_worker,
+    stockfish_worker_evaluator,
+    write_metadata_sidecar,
+)
+from finetune.chess_reward import require_stockfish_path
 
 PROGRESS_EVERY_ROWS = 500
-
-_WORKER_EVALUATOR: StockfishEvaluator | None = None
 
 
 @dataclass(frozen=True)
@@ -86,9 +89,7 @@ class DistillStats:
 
 def main() -> None:
     args = _parse_args()
-    stockfish_path = args.stockfish_path or os.environ.get("ARENA_STOCKFISH_PATH")
-    if not stockfish_path:
-        sys.exit("No Stockfish binary: pass --stockfish-path or set ARENA_STOCKFISH_PATH.")
+    stockfish_path = require_stockfish_path(args.stockfish_path)
     config = DistillConfig(
         input=str(args.input),
         output=str(args.output),
@@ -103,16 +104,7 @@ def main() -> None:
     )
     stats = relabel_file(config)
     if args.metadata_output is not None:
-        args.metadata_output.parent.mkdir(parents=True, exist_ok=True)
-        args.metadata_output.write_text(
-            json.dumps(
-                {"config": asdict(config), "stats": stats.to_json()},
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_metadata_sidecar(args.metadata_output, config=config, stats=stats)
     print(
         f"Wrote {stats.rows_written}/{stats.rows_read} rows "
         f"({config.label_mode} mode); "
@@ -135,7 +127,7 @@ def relabel_file(config: DistillConfig) -> DistillStats:
         with output_path.open("w", encoding="utf-8") as output_file:
             with Pool(
                 processes=config.workers,
-                initializer=_init_worker,
+                initializer=init_stockfish_worker,
                 initargs=(config.stockfish_path, config.nodes, config.hash_mb),
             ) as pool:
                 for row, label in pool.imap(_label_row, lines, chunksize=8):
@@ -210,18 +202,8 @@ def _process_result(
     stats.rows_written += 1
 
 
-def _init_worker(stockfish_path: str, nodes: int, hash_mb: int) -> None:
-    global _WORKER_EVALUATOR
-    _WORKER_EVALUATOR = StockfishEvaluator(
-        binary_path=stockfish_path,
-        nodes=nodes,
-        threads=1,
-        hash_mb=hash_mb,
-    )
-
-
 def _label_row(line: str) -> tuple[dict[str, object] | None, dict[str, object] | None]:
-    assert _WORKER_EVALUATOR is not None
+    evaluator = stockfish_worker_evaluator()
     try:
         row = json.loads(line)
         board = chess.Board(str(row["fen"]))
@@ -231,7 +213,7 @@ def _label_row(line: str) -> tuple[dict[str, object] | None, dict[str, object] |
     except (ValueError, KeyError, TypeError):
         return None, None
 
-    evaluation = _WORKER_EVALUATOR.evaluate_move(board, human_move)
+    evaluation = evaluator.evaluate_move(board, human_move)
     best_move_san: str | None = None
     if evaluation.best_move_uci is not None:
         try:

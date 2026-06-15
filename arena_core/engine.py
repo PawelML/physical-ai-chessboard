@@ -16,9 +16,10 @@ from arena_core.llm.base import LLMService
 from arena_core.move_sources import MoveProposal
 from arena_core.parser import ParsedMove, parse_uci_json
 from arena_core.persistence import models
-from arena_core.persistence.repositories import ensure_prompt, text_hash
+from arena_core.persistence.repositories import ensure_prompt
 from arena_core.prompts import LegalityMode, build_strict_prompt
 from arena_core.telemetry import estimate_usage
+from arena_core.utils import close_if_present, last_opponent_move, own_moves_for_side, text_hash
 
 
 class MoveSource(Protocol):
@@ -190,9 +191,9 @@ class ArenaGame:
                 await session.commit()
             raise
         finally:
-            _close_if_present(self.white)
+            close_if_present(self.white)
             if self.black is not self.white:
-                _close_if_present(self.black)
+                close_if_present(self.black)
 
         self.finish(game_row, termination_reason=termination_reason)
         if commit_after_each_ply:
@@ -234,8 +235,16 @@ class ArenaGame:
             prompt = build_strict_prompt(
                 board=self.board,
                 san_history=self._san_history,
-                own_moves=self._own_moves_for_side(self.board.turn),
-                last_opponent_move=self._last_opponent_move_for_side(self.board.turn),
+                own_moves=own_moves_for_side(
+                    san_history=self._san_history,
+                    uci_history=self._uci_history,
+                    side=self.board.turn,
+                ),
+                last_opponent_move=last_opponent_move(
+                    san_history=self._san_history,
+                    uci_history=self._uci_history,
+                    side_to_move=self.board.turn,
+                ),
                 legality_mode=self.legality_mode,
                 feedback=feedback,
                 strategic_memory=(
@@ -496,20 +505,6 @@ class ArenaGame:
         if self.strategic_memory:
             self._update_strategic_memory(color, san, move.uci(), parsed)
 
-    def _own_moves_for_side(self, side: chess.Color) -> list[tuple[str, str]]:
-        start = 0 if side == chess.WHITE else 1
-        return list(zip(self._san_history[start::2], self._uci_history[start::2], strict=True))
-
-    def _last_opponent_move_for_side(self, side: chess.Color) -> str | None:
-        if not self._san_history:
-            return None
-        last_was_white = len(self._san_history) % 2 == 1
-        if side == chess.WHITE and not last_was_white:
-            return f"{self._san_history[-1]}/{self._uci_history[-1]}"
-        if side == chess.BLACK and last_was_white:
-            return f"{self._san_history[-1]}/{self._uci_history[-1]}"
-        return None
-
     def _repetition_warning(self) -> str | None:
         if self.board.can_claim_threefold_repetition():
             return (
@@ -562,13 +557,6 @@ class ArenaGame:
             move = chess.Move.from_uci(uci)
             node = node.add_variation(move)
         return str(game)
-
-
-def _close_if_present(source: object) -> None:
-    close = getattr(source, "close", None)
-    if callable(close):
-        close()
-
 
 def _initial_strategy_memory(side: str) -> dict[str, str]:
     return {

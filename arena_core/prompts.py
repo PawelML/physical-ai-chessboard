@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from hashlib import sha256
 from typing import Literal
 
 import chess
+
+from arena_core.utils import text_hash
 
 PromptMode = Literal["strict", "reasoning"]
 LegalityMode = Literal["open", "constrained"]
@@ -40,7 +41,7 @@ class _PromptTemplate:
 
 
 def template_hash(template_text: str) -> str:
-    return sha256(template_text.encode("utf-8")).hexdigest()
+    return text_hash(template_text)
 
 
 def build_strict_prompt(

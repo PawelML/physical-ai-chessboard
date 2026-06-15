@@ -5,13 +5,19 @@ import asyncio
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TextIO
-
-import chess
+from typing import Any
 
 from arena_core.llm.base import LLMResponse, LLMService
 from arena_core.llm.ollama import OllamaLLMService
 from arena_core.parser import parse_uci_json
+from finetune._common import (
+    config_from_args,
+    run_async_prediction_eval,
+    update_eval_stats,
+    write_metrics_output,
+)
+from finetune._common import is_legal_move as _is_legal_move
+from finetune._common import rate as _rate
 
 
 @dataclass(frozen=True)
@@ -51,20 +57,7 @@ class BaselineEvalStats:
 
 def main() -> None:
     args = _parse_args()
-    config = BaselineEvalConfig(
-        dataset=str(args.dataset),
-        model=args.model,
-        output=str(args.output) if args.output is not None else None,
-        predictions_output=(
-            str(args.predictions_output) if args.predictions_output is not None else None
-        ),
-        limit=args.limit,
-        ollama_base_url=args.ollama_base_url,
-        timeout_seconds=args.timeout_seconds,
-        num_ctx=args.num_ctx,
-        num_predict=args.num_predict,
-        think=args.think,
-    )
+    config = config_from_args(BaselineEvalConfig, args)
     service = OllamaLLMService(
         base_url=args.ollama_base_url,
         timeout_seconds=args.timeout_seconds,
@@ -88,11 +81,7 @@ def main() -> None:
         "metrics": stats.to_json(),
     }
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_metrics_output(args.output, payload)
     print(json.dumps(payload["metrics"], indent=2, sort_keys=True))
 
 
@@ -110,40 +99,30 @@ async def evaluate_dataset(
     if progress_every <= 0:
         raise ValueError("progress_every must be positive")
 
-    predictions_file: TextIO | None = None
-    try:
-        if predictions_output_path is not None:
-            predictions_output_path.parent.mkdir(parents=True, exist_ok=True)
-            predictions_file = predictions_output_path.open("w", encoding="utf-8")
-        stats = BaselineEvalStats()
-        with dataset_path.open(encoding="utf-8") as dataset_file:
-            for line in dataset_file:
-                if limit is not None and stats.examples >= limit:
-                    break
-                row = json.loads(line)
-                prediction = await evaluate_example(
-                    example=row,
-                    model=model,
-                    service=service,
-                )
-                stats.examples += 1
-                stats.json_parse_ok += int(prediction["parse_ok"])
-                stats.legal_move_ok += int(prediction["legal_ok"])
-                stats.top1_match += int(prediction["top1_match"])
-                stats.service_errors += int(prediction["service_error"])
-                if predictions_file is not None:
-                    predictions_file.write(json.dumps(prediction, separators=(",", ":")) + "\n")
-                if stats.examples % progress_every == 0:
-                    print(
-                        "Evaluated "
-                        f"{stats.examples}: parse={_rate(stats.json_parse_ok, stats.examples):.3f} "
-                        f"legal={_rate(stats.legal_move_ok, stats.examples):.3f} "
-                        f"top1={_rate(stats.top1_match, stats.examples):.3f}"
-                    )
-    finally:
-        if predictions_file is not None:
-            predictions_file.close()
-    return stats
+    return await run_async_prediction_eval(
+        dataset_path=dataset_path,
+        limit=limit,
+        predictions_output_path=predictions_output_path,
+        stats=BaselineEvalStats(),
+        predict=lambda row: evaluate_example(example=row, model=model, service=service),
+        update_stats=_update_stats,
+        progress_every=progress_every,
+        progress=_print_progress,
+    )
+
+
+def _update_stats(stats: BaselineEvalStats, prediction: dict[str, Any]) -> None:
+    update_eval_stats(stats, prediction)
+    stats.service_errors += int(prediction["service_error"])
+
+
+def _print_progress(stats: BaselineEvalStats) -> None:
+    print(
+        "Evaluated "
+        f"{stats.examples}: parse={_rate(stats.json_parse_ok, stats.examples):.3f} "
+        f"legal={_rate(stats.legal_move_ok, stats.examples):.3f} "
+        f"top1={_rate(stats.top1_match, stats.examples):.3f}"
+    )
 
 
 async def evaluate_example(
@@ -181,20 +160,6 @@ async def evaluate_example(
         "completion_tokens": response.completion_tokens,
         "total_tokens": response.total_tokens,
     }
-
-
-def _is_legal_move(*, fen: str, move_text: str | None) -> bool:
-    if move_text is None:
-        return False
-    try:
-        move = chess.Move.from_uci(move_text)
-    except ValueError:
-        return False
-    return move in chess.Board(fen).legal_moves
-
-
-def _rate(numerator: int, denominator: int) -> float:
-    return numerator / denominator if denominator else 0.0
 
 
 def _parse_args() -> argparse.Namespace:

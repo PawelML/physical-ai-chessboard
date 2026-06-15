@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from finetune._common import read_jsonl, write_metadata_sidecar
 
 
 @dataclass(frozen=True)
@@ -54,22 +56,12 @@ def main() -> None:
     )
     stats = build_tactical_gate(config)
     if config.metadata_output is not None:
-        metadata_path = Path(config.metadata_output)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(
-            json.dumps(
-                {"config": asdict(config), "stats": stats.to_json()},
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_metadata_sidecar(Path(config.metadata_output), config=config, stats=stats)
     print(f"Wrote {stats.selected_rows} tactical gate rows to {config.output}.")
 
 
 def build_tactical_gate(config: TacticalGateConfig) -> TacticalGateStats:
-    dataset_rows = _read_jsonl(Path(config.dataset))
+    dataset_rows = read_jsonl(Path(config.dataset))
     by_fen = {str(row["fen"]): row for row in dataset_rows}
     output_path = Path(config.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +70,7 @@ def build_tactical_gate(config: TacticalGateConfig) -> TacticalGateStats:
     selected: dict[str, dict[str, Any]] = {}
     for prediction_path in config.predictions:
         source_name = Path(prediction_path).stem
-        for prediction in _read_jsonl(Path(prediction_path)):
+        for prediction in read_jsonl(Path(prediction_path)):
             stats.prediction_rows += 1
             fen = str(prediction["fen"])
             row = by_fen.get(fen)
@@ -117,11 +109,6 @@ def build_tactical_gate(config: TacticalGateConfig) -> TacticalGateStats:
             output_file.write(json.dumps(row, separators=(",", ":")) + "\n")
     stats.selected_rows = len(selected)
     return stats
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    with path.open(encoding="utf-8") as input_file:
-        return [json.loads(line) for line in input_file if line.strip()]
 
 
 def _parse_args() -> argparse.Namespace:

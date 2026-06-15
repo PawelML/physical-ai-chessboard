@@ -11,6 +11,7 @@ import chess
 import chess.pgn
 
 from arena_core.prompts import STRICT_TEMPLATE_VERSION, LegalityMode, build_strict_prompt
+from arena_core.utils import last_opponent_move, own_moves_for_side
 
 
 @dataclass(frozen=True)
@@ -121,12 +122,12 @@ def _write_game_examples(
         prompt = build_strict_prompt(
             board=board,
             san_history=san_history,
-            own_moves=_own_moves_for_side(
+            own_moves=own_moves_for_side(
                 san_history=san_history,
                 uci_history=uci_history,
                 side=mover,
             ),
-            last_opponent_move=_last_opponent_move(
+            last_opponent_move=last_opponent_move(
                 san_history=san_history,
                 uci_history=uci_history,
                 side_to_move=mover,
@@ -163,33 +164,6 @@ def _write_game_examples(
         san_history.append(san)
         uci_history.append(move.uci())
     return count
-
-
-def _own_moves_for_side(
-    *,
-    san_history: list[str],
-    uci_history: list[str],
-    side: chess.Color,
-) -> list[tuple[str, str]]:
-    start = 0 if side == chess.WHITE else 1
-    return list(zip(san_history[start::2], uci_history[start::2], strict=True))
-
-
-def _last_opponent_move(
-    *,
-    san_history: list[str],
-    uci_history: list[str],
-    side_to_move: chess.Color,
-) -> str | None:
-    if not san_history:
-        return None
-    last_move_was_white = len(san_history) % 2 == 1
-    opponent_just_moved = (
-        side_to_move == chess.BLACK and last_move_was_white
-    ) or (side_to_move == chess.WHITE and not last_move_was_white)
-    if not opponent_just_moved:
-        return None
-    return f"{san_history[-1]}/{uci_history[-1]}"
 
 
 def _parse_args() -> argparse.Namespace:

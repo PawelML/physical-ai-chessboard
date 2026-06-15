@@ -3,8 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from arena_core.llm.base import LLMService
 from arena_core.persistence import models
-from arena_core.persistence.repositories import ensure_prompt, text_hash
+from arena_core.persistence.repositories import ensure_prompt
 from arena_core.prompts import LegalityMode, build_reasoning_prompt
+from arena_core.utils import text_hash
 
 PERSONAS = {"aggressive", "positional", "defensive", "risk-taking", "technician"}
 
