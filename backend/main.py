@@ -31,6 +31,7 @@ from arena_core.persistence.models import (
     EngineEvaluation,
     Game,
     GameSummary,
+    ModelSnapshot,
     Move,
     MoveAnnotation,
     OperationalEvent,
@@ -383,6 +384,14 @@ class ModelComparisonRow(BaseModel):
     model_key: str
     label: str
     model_snapshot_id: int | None
+    snapshot_created_at: str | None
+    played_from: str | None
+    played_to: str | None
+    quantization: str | None
+    context_window: int | None
+    sampler_params: dict[str, object] | None
+    runtime_version: str | None
+    run_ids: list[int]
     legality_mode: str
     color: str
     run_count: int
@@ -887,9 +896,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         color: str | None = None,
     ) -> list[ModelComparisonRow]:
         async with session_factory() as session:
-            query = select(GameSummary, RunParticipant).join(
-                RunParticipant,
-                RunParticipant.id == GameSummary.run_participant_id,
+            query = (
+                select(GameSummary, RunParticipant, ModelSnapshot, BenchmarkRun)
+                .join(
+                    RunParticipant,
+                    RunParticipant.id == GameSummary.run_participant_id,
+                )
+                .join(
+                    BenchmarkRun,
+                    BenchmarkRun.id == GameSummary.run_id,
+                )
+                .outerjoin(
+                    ModelSnapshot,
+                    ModelSnapshot.id == RunParticipant.model_snapshot_id,
+                )
             )
             # Stockfish is an engine, not an LLM: exclude it from the model matrix so it
             # doesn't dominate every metric. (random stays as a baseline floor.)
@@ -903,14 +923,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows = (await session.execute(query)).all()
         # Group by model identity AND legality_mode so open/constrained never mix
         # into one row (separate benchmarks), even when no legality filter is given.
-        grouped: dict[str, list[tuple[GameSummary, RunParticipant]]] = {}
-        for summary, participant in rows:
+        grouped: dict[
+            str, list[tuple[GameSummary, RunParticipant, ModelSnapshot | None, BenchmarkRun]]
+        ] = {}
+        for summary, participant, snapshot, run in rows:
             if summary.model_snapshot_id is not None:
                 identity = f"snap:{summary.model_snapshot_id}"
             else:
                 identity = f"name:{participant.display_name}"
             grouped.setdefault(f"{identity}|{summary.legality_mode}", []).append(
-                (summary, participant)
+                (summary, participant, snapshot, run)
             )
         combined_color = color if color is not None else "all"
         comparison = [
@@ -1897,11 +1919,17 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
 
 def _model_comparison_row(
     key: str,
-    pairs: list[tuple[GameSummary, RunParticipant]],
+    pairs: list[tuple[GameSummary, RunParticipant, ModelSnapshot | None, BenchmarkRun]],
     color: str,
 ) -> ModelComparisonRow:
-    rows = [summary for summary, _ in pairs]
+    rows = [summary for summary, _, _, _ in pairs]
     participant = pairs[0][1]
+    snapshot = pairs[0][2]
+    run_ids = sorted({row.run_id for row in rows})
+    # "Played" range comes from the runs that contributed games — that is the
+    # "when was this benchmarked" signal the matrix sorts/disambiguates on, distinct
+    # from when the snapshot was first registered.
+    run_dates = sorted(run.created_at for _, _, _, run in pairs)
     games_played = sum(row.games_played for row in rows)
     wins = sum(row.wins for row in rows)
     draws = sum(row.draws for row in rows)
@@ -1921,9 +1949,17 @@ def _model_comparison_row(
         model_key=key,
         label=participant.display_name,
         model_snapshot_id=rows[0].model_snapshot_id,
+        snapshot_created_at=snapshot.created_at.isoformat() if snapshot else None,
+        played_from=run_dates[0].isoformat() if run_dates else None,
+        played_to=run_dates[-1].isoformat() if run_dates else None,
+        quantization=snapshot.quantization if snapshot else None,
+        context_window=snapshot.context_window if snapshot else None,
+        sampler_params=snapshot.sampler_params if snapshot else None,
+        runtime_version=snapshot.runtime_version if snapshot else None,
+        run_ids=run_ids,
         legality_mode=rows[0].legality_mode,
         color=color,
-        run_count=len({row.run_id for row in rows}),
+        run_count=len(run_ids),
         games_played=games_played,
         wins=wins,
         draws=draws,

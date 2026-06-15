@@ -172,6 +172,14 @@ export type ModelComparisonRow = {
   model_key: string;
   label: string;
   model_snapshot_id: number | null;
+  snapshot_created_at: string | null;
+  played_from: string | null;
+  played_to: string | null;
+  quantization: string | null;
+  context_window: number | null;
+  sampler_params: Record<string, unknown> | null;
+  runtime_version: string | null;
+  run_ids: number[];
   legality_mode: string;
   color: string;
   run_count: number;
