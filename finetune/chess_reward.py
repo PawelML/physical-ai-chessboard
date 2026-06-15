@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import chess
 
@@ -21,7 +21,15 @@ MALFORMED_REWARD = -1.0
 ILLEGAL_REWARD = -0.5
 TACTICAL_ILLEGAL_REWARD = -1.0
 
-EvaluatorFactory = Callable[[], StockfishEvaluator]
+class RewardEvaluator(Protocol):
+    def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
+        """Evaluate one legal move."""
+
+    def close(self) -> None:
+        """Release evaluator resources."""
+
+
+EvaluatorFactory = Callable[[], RewardEvaluator]
 
 
 @dataclass(frozen=True)
@@ -95,7 +103,7 @@ class StockfishRewardScorer:
         self.metrics_output = metrics_output
         self.latest_stats = RewardBatchStats()
         self._evaluator_factory = evaluator_factory
-        self._evaluator: StockfishEvaluator | None = None
+        self._evaluator: RewardEvaluator | None = None
         self._pool: Pool | None = None
         self._cache: dict[tuple[str, str], RewardSample] = {}
         self._best_move_cache: dict[str, str | None] = {}
@@ -255,7 +263,7 @@ class StockfishRewardScorer:
             return TACTICAL_ILLEGAL_REWARD
         return ILLEGAL_REWARD
 
-    def _ensure_evaluator(self) -> StockfishEvaluator:
+    def _ensure_evaluator(self) -> RewardEvaluator:
         if self._evaluator is None:
             if self._evaluator_factory is not None:
                 self._evaluator = self._evaluator_factory()
@@ -322,7 +330,7 @@ def _score_worker_task(payload: tuple[str, str, RewardConfig]) -> RewardSample:
 
 
 def _score_with_evaluator(
-    evaluator: StockfishEvaluator,
+    evaluator: RewardEvaluator,
     task: tuple[str, str],
     config: RewardConfig,
 ) -> RewardSample:

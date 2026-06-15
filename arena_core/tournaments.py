@@ -17,6 +17,7 @@ from arena_core.llm.providers import parse_provider_model
 from arena_core.persistence import models
 from arena_core.persistence.repositories import ensure_prompt
 from arena_core.prompts import LegalityMode, build_strict_prompt
+from arena_core.reranker import inner_source_name, is_reranked_source_name
 from arena_core.telemetry import estimate_pair_footprint
 from arena_core.utils import close_if_present
 
@@ -382,14 +383,15 @@ async def _create_participant(
     model_metadata: OllamaModelMetadata | None,
 ) -> models.RunParticipant:
     model_snapshot_id = None
-    if source_name == "random":
+    source_identity = inner_source_name(source_name)
+    if source_identity == "random":
         opponent_type = "random"
-    elif source_name == "stockfish":
+    elif source_identity == "stockfish":
         opponent_type = "stockfish"
     else:
         opponent_type = "model"
     if opponent_type == "model":
-        provider_model = parse_provider_model(source_name)
+        provider_model = parse_provider_model(source_identity)
         model = models.Model(
             provider=provider_model.provider,
             name=provider_model.model,
@@ -408,7 +410,7 @@ async def _create_participant(
                 settings.ollama_num_ctx
                 or (model_metadata.context_window if model_metadata else None)
             ),
-            sampler_params=_ollama_sampler_params(settings),
+            sampler_params=_sampler_params_for_source(source_name, settings),
             runtime_version=model_metadata.runtime_version if model_metadata else None,
         )
         session.add(snapshot)
@@ -453,6 +455,7 @@ def _config_payload(
         "prompt_id": prompt_id,
         "prompt_version": settings.prompt_version,
         "stockfish_options": _stockfish_options(settings),
+        "reranker_options": _reranker_options([config.competitor_a, config.competitor_b], settings),
         "strategic_memory": config.strategic_memory,
     }
 
@@ -464,7 +467,8 @@ async def _model_metadata_for_sources(
 ) -> dict[str, OllamaModelMetadata]:
     metadata: dict[str, OllamaModelMetadata] = {}
     for source_name in dict.fromkeys(source_names):
-        provider_model = parse_provider_model(source_name)
+        source_identity = inner_source_name(source_name)
+        provider_model = parse_provider_model(source_identity)
         if provider_model.provider != "local" or provider_model.model in {"random", "stockfish"}:
             continue
         item = await fetch_ollama_model_metadata(
@@ -507,6 +511,29 @@ def _ollama_sampler_params(settings: Settings) -> dict[str, object]:
         "cpu_offload_min_gpu_layers": settings.ollama_cpu_offload_min_gpu_layers,
         "format": "json",
         "think": settings.ollama_think,
+    }
+
+
+def _sampler_params_for_source(source_name: str, settings: Settings) -> dict[str, object]:
+    if not is_reranked_source_name(source_name):
+        return _ollama_sampler_params(settings)
+    inner_settings = settings.model_copy(
+        update={"ollama_temperature": settings.reranker_temperature}
+    )
+    params = _ollama_sampler_params(inner_settings)
+    params["reranker"] = _reranker_options([source_name], settings)
+    return params
+
+
+def _reranker_options(source_names: list[str], settings: Settings) -> dict[str, object] | None:
+    if not any(is_reranked_source_name(source_name) for source_name in source_names):
+        return None
+    return {
+        "scorer": settings.reranker_scorer,
+        "n_candidates": settings.reranker_n_candidates,
+        "temperature": settings.reranker_temperature,
+        "veto_cpl_threshold": settings.reranker_veto_cpl_threshold,
+        "veto_nodes": settings.reranker_veto_nodes,
     }
 
 

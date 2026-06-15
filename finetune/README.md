@@ -339,3 +339,62 @@ Only after the smoke run keeps JSON/legal stable, run the full one-epoch pass by
 using a fresh output directory and `--max-steps -1`. Gate the result with the
 same CPL eval command against the GRPO adapter; proceed to GGUF/Ollama and arena
 games only if mean generated CPL drops without a JSON/legal regression.
+
+## Phase 7 1-Ply Reranker / Blunder Classifier
+
+Phase A adds a test-time reranker around the existing strict-v7 LLM move source.
+It samples multiple strict-v7 JSON moves, validates legality with `python-chess`,
+scores distinct legal candidates with Stockfish, and plays the highest-frequency
+non-vetoed move. This is not a strict-v7 single-move benchmark; request it with
+the explicit `reranked:<model>` source prefix so runs remain separate.
+
+Apply the telemetry migration before running against an existing database:
+
+```bash
+alembic -x db_url=sqlite+aiosqlite:///./arena.db upgrade head
+```
+
+Run a quick smoke game:
+
+```bash
+export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
+ARENA_RERANKER_N_CANDIDATES=5 \
+ARENA_RERANKER_TEMPERATURE=0.8 \
+ARENA_RERANKER_VETO_CPL_THRESHOLD=300 \
+ARENA_RERANKER_VETO_NODES=50000 \
+arena play \
+  reranked:chess-ft-qwen35-9b-pilot-grpo-q8_0:latest \
+  stockfish \
+  --db-url sqlite+aiosqlite:///./arena.db \
+  --legality-mode constrained \
+  --max-plies 20
+```
+
+Run the Phase A ceiling benchmark before building the learned classifier:
+
+```bash
+export ARENA_STOCKFISH_PATH="$PWD/vendor/stockfish/root/usr/games/stockfish"
+ARENA_STOCKFISH_NODES=200000 \
+ARENA_STOCKFISH_HASH_MB=128 \
+ARENA_STOCKFISH_SKILL=2 \
+ARENA_STOCKFISH_LIMIT_STRENGTH=true \
+ARENA_STOCKFISH_TARGET_ELO=1320 \
+ARENA_RERANKER_N_CANDIDATES=5 \
+ARENA_RERANKER_TEMPERATURE=0.8 \
+ARENA_RERANKER_VETO_CPL_THRESHOLD=300 \
+ARENA_RERANKER_VETO_NODES=50000 \
+arena tournament \
+  reranked:chess-ft-qwen35-9b-pilot-grpo-q8_0:latest \
+  stockfish \
+  --db-url sqlite+aiosqlite:///./arena.db \
+  --name qwen35-grpo-reranked-stockfish-veto-100g \
+  --legality-mode constrained \
+  --game-count 100 \
+  --seed 0 \
+  --stockfish-skill 2 \
+  --stockfish-elo 1320
+```
+
+After the run, rebuild summaries and compare blunders/game, W-D-L, and average
+CPL against the GRPO-1000 baseline. Proceed to Phase B only if the Stockfish
+ceiling materially reduces blunders and scores at least one win or draw.

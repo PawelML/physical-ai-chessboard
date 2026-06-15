@@ -276,6 +276,7 @@ class ArenaGame:
                 latency_ms=proposal.latency_ms,
                 thinking=proposal.thinking,
                 thinking_used=proposal.thinking_used,
+                reranker_metadata=proposal.metadata,
             )
             session.add(attempt_row)
             await session.flush()

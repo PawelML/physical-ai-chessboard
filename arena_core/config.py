@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     stockfish_limit_strength: bool | None = None
     stockfish_target_elo: int | None = Field(default=None, ge=1320, le=3190)
     ollama_vram_budget_gb: float = Field(default=24.0, gt=0)
+    reranker_n_candidates: int = Field(default=5, ge=1, le=32)
+    reranker_temperature: float = Field(default=0.8, ge=0.0)
+    reranker_veto_cpl_threshold: int = Field(default=300, ge=0)
+    reranker_veto_nodes: int = Field(default=50_000, gt=0)
+    reranker_scorer: str = "stockfish"
 
 
 @lru_cache

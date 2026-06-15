@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 import chess
 import httpx
@@ -273,6 +273,34 @@ class GameDetail(BaseModel):
 
 
 class _GameMetrics(BaseModel):
+    games_played: int
+    wins: int
+    draws: int
+    losses: int
+    unfinished: int
+    avg_game_plies: float
+    avg_cpl: float | None
+    evaluated_move_count: int
+    accuracy_rate: float
+    attempt_count: int
+    illegal_attempts: int
+    malformed_attempts: int
+    illegal_rate: float
+    illegal_rate_ci_low: float
+    illegal_rate_ci_high: float
+    malformed_rate: float
+    malformed_rate_ci_low: float
+    malformed_rate_ci_high: float
+    win_rate: float
+    win_rate_ci_low: float
+    win_rate_ci_high: float
+    low_sample: bool
+    avg_retries: float
+    avg_latency_ms: float
+    total_tokens: int
+
+
+class _GameMetricsUpdate(TypedDict):
     games_played: int
     wins: int
     draws: int
@@ -1642,7 +1670,7 @@ def _comparison_row(run_id: int, rows: list[GameSummary]) -> RunComparisonRow:
     return RunComparisonRow(run_id=run_id, **_game_metrics_update(rows))
 
 
-def _game_metrics_update(rows: list[GameSummary]) -> dict[str, object]:
+def _game_metrics_update(rows: list[GameSummary]) -> _GameMetricsUpdate:
     games_played = sum(row.games_played for row in rows)
     wins = sum(row.wins for row in rows)
     draws = sum(row.draws for row in rows)

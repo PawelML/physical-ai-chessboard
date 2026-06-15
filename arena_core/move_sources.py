@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -10,3 +11,4 @@ class MoveProposal:
     total_tokens: int | None = None
     thinking: str | None = None
     thinking_used: bool = False
+    metadata: dict[str, Any] | None = None

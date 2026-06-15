@@ -40,6 +40,25 @@ class FailingMoveSource:
         raise RuntimeError("model failed")
 
 
+class MetadataMoveSource:
+    name = "metadata"
+    source_type = "llm_reranked"
+
+    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        return MoveProposal(
+            raw_response='{"move":"e2e4"}',
+            latency_ms=1.0,
+            metadata={
+                "n_candidates_generated": 5,
+                "n_legal": 4,
+                "n_vetoed": 1,
+                "veto_changed_move": True,
+                "all_vetoed": False,
+                "chosen_multiplicity": 2,
+            },
+        )
+
+
 @pytest.mark.integration
 async def test_random_agents_persist_one_move(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
@@ -65,6 +84,31 @@ async def test_random_agents_persist_one_move(tmp_path: Path) -> None:
     assert move_count == 1
     assert attempt_count == 1
     assert token_count == 1
+
+
+@pytest.mark.integration
+async def test_move_proposal_metadata_is_persisted_on_attempt(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+
+    async with session_factory() as session:
+        async with session.begin():
+            await ArenaGame(
+                white=MetadataMoveSource(),
+                black=RandomMoveSource(),
+                settings=Settings(max_retries=0),
+                max_plies=1,
+            ).run(session)
+
+    async with session_factory() as session:
+        attempt = (await session.execute(select(Attempt))).scalar_one()
+        move = (await session.execute(select(Move))).scalar_one()
+
+    assert move.move_source == "llm_reranked"
+    assert attempt.reranker_metadata is not None
+    assert attempt.reranker_metadata["n_candidates_generated"] == 5
+    assert attempt.reranker_metadata["veto_changed_move"] is True
 
 
 @pytest.mark.integration

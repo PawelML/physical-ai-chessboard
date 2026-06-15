@@ -18,6 +18,13 @@ from arena_core.persistence.database import init_db as create_tables
 from arena_core.persistence.models import Attempt
 from arena_core.prompts import LegalityMode
 from arena_core.reports import export_game_report
+from arena_core.reranker import (
+    RerankedLLMMoveSource,
+    RerankerConfig,
+    StockfishVetoScorer,
+    inner_source_name,
+    is_reranked_source_name,
+)
 from arena_core.tournaments import TournamentConfig, TournamentResult, run_tournament
 
 app = typer.Typer(no_args_is_help=True)
@@ -89,6 +96,10 @@ def tournament(
         int | None,
         typer.Option("--max-plies", help="Optional debugging cap per game."),
     ] = None,
+    game_count: Annotated[
+        int | None,
+        typer.Option("--game-count", help="Optional total game count."),
+    ] = None,
     seed: Annotated[int, typer.Option("--seed", help="Deterministic run seed.")] = 0,
     stockfish_path: Annotated[
         str | None,
@@ -115,6 +126,7 @@ def tournament(
             name=name,
             legality_mode=legality_mode,
             max_plies=max_plies,
+            game_count=game_count,
             seed=seed,
             stockfish_path=stockfish_path,
             stockfish_skill=stockfish_skill,
@@ -248,6 +260,7 @@ async def _tournament_async(
     name: str,
     legality_mode: str,
     max_plies: int | None,
+    game_count: int | None,
     seed: int,
     stockfish_path: str | None,
     stockfish_skill: int | None,
@@ -290,6 +303,7 @@ async def _tournament_async(
                     competitor_b=competitor_b,
                     legality_mode=cast("LegalityMode", legality_mode),
                     max_plies=max_plies,
+                    game_count=game_count,
                     seed=seed,
                 ),
                 settings=effective_settings,
@@ -343,6 +357,40 @@ def _source_from_name(
     *,
     rng: random.Random | None = None,
 ) -> MoveSource:
+    if is_reranked_source_name(name):
+        inner_name = inner_source_name(name)
+        if inner_name in {"random", "stockfish"}:
+            raise ValueError("reranked:<source> requires an LLM model source")
+        if settings.reranker_scorer != "stockfish":
+            raise ValueError("only ARENA_RERANKER_SCORER=stockfish is implemented")
+        if settings.stockfish_path is None:
+            raise ValueError(
+                "reranked:<model> with stockfish scorer requires --stockfish-path "
+                "or ARENA_STOCKFISH_PATH"
+            )
+        reranker_settings = settings.model_copy(
+            update={"ollama_temperature": settings.reranker_temperature}
+        )
+        model, service = llm_service_for(inner_name, reranker_settings)
+        inner = LLMMoveSource(model=model, service=service)
+        scorer = StockfishVetoScorer(
+            evaluator=StockfishEvaluator(
+                binary_path=settings.stockfish_path,
+                nodes=settings.reranker_veto_nodes,
+                threads=settings.stockfish_threads,
+                hash_mb=settings.stockfish_hash_mb,
+            ),
+            veto_cpl_threshold=settings.reranker_veto_cpl_threshold,
+        )
+        return RerankedLLMMoveSource(
+            inner=inner,
+            scorer=scorer,
+            config=RerankerConfig(
+                n_candidates=settings.reranker_n_candidates,
+                veto_cpl_threshold=settings.reranker_veto_cpl_threshold,
+            ),
+            temperature=settings.reranker_temperature,
+        )
     if name == "random":
         return RandomMoveSource(rng=rng)
     if name == "stockfish":
