@@ -571,7 +571,7 @@ Dataset:
 Training:
 
 - [ ] Add `finetune/train_critic_ranker.py`.
-- [ ] Add `finetune/evaluate_critic_ranker.py`.
+- [x] Add `finetune/evaluate_critic_ranker_lora.py`.
 - [ ] Completion-only loss on compact JSON target.
 - [ ] Add tests for prompt/target rendering.
 
@@ -654,7 +654,28 @@ If that answer is yes, the approach has a realistic path to reducing blunders/ga
     positions;
   - oracle vs first generator candidate: mean CPL reduction 102.88 over 56
     positions with Qwen candidates.
+- Added `finetune/evaluate_critic_ranker_lora.py`.
+- Ran two local ignored Qwen2.5 1.5B LoRA critic probes:
+  - unbalanced train split:
+    `outputs/finetune/critic_ranker_qwen25_15b_pilot_lora`;
+  - class-balanced oversampled train split:
+    `outputs/finetune/critic_ranker_qwen25_15b_balanced_lora`.
+- Held-out validation result on 64 rows:
+  - unbalanced: 64/64 JSON parse, risk match 43.75%, blunder match 85.94%,
+    mean score absolute error 28.06;
+  - unbalanced ranking: selected mean CPL 116.5 vs oracle 4.5,
+    oracle move match 4/20 positions;
+  - unbalanced failure mode: all 64 predictions were `risk=good`.
+  - balanced: 64/64 JSON parse, risk match 25.0%, blunder match 73.44%,
+    mean score absolute error 30.64;
+  - balanced ranking: selected mean CPL 91.39 vs oracle 4.5,
+    oracle move match 7/20 positions;
+  - balanced failure mode: predictions became diverse, but overcalled blunders
+    and still ranked candidates poorly.
 
-Next implementation step: run a small 100-200 step critic fine-tune and evaluate
-whether learned scores improve candidate ordering against the first-generator and
-final-move baselines before wiring any runtime mode.
+Conclusion: the pipeline is valid, but this small dataset/model setup does not
+pass the runtime gate. Do not wire `learned_critic` yet.
+
+Next implementation step: build a larger candidate-heavy dataset from fixed
+candidate-critic runs plus fresh policy sampling, then train/evaluate again with
+a simpler ranking target before any runtime integration.
