@@ -825,32 +825,49 @@ Training result:
 - epoch fraction: 0.2664;
 - train loss: 0.06552.
 
+Also trained a longer 1,200-step run on the same pairwise train split:
+
+```text
+outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora
+```
+
+Longer training result:
+
+- steps: 1,200;
+- epoch fraction: 0.7993;
+- train loss: 0.05627.
+
 Full validation result on 1,523 held-out pairwise examples:
 
-| Metric | Value |
-| --- | ---: |
-| Parse rate | 100.0% |
-| Legal rate | 100.0% |
-| Candidate-list rate | 100.0% |
-| Top-1 target match | 971/1,523 (63.76%) |
-| First-prompt baseline top-1 | 770/1,523 (50.56%) |
-| Selected mean CPL | 164.20 |
-| First-prompt candidate mean CPL | 239.45 |
-| Target/oracle mean CPL | 39.27 |
-| Selected high-risk moves | 553/1,523 |
-| First-prompt high-risk moves | 752/1,523 |
-| Selected blunders | 386/1,523 |
-| First-prompt blunders | 538/1,523 |
+| Metric | 400-step | 1,200-step |
+| --- | ---: | ---: |
+| Parse rate | 100.0% | 100.0% |
+| Legal rate | 100.0% | 100.0% |
+| Candidate-list rate | 100.0% | 100.0% |
+| Top-1 target match | 971/1,523 (63.76%) | 1,058/1,523 (69.47%) |
+| First-prompt baseline top-1 | 770/1,523 (50.56%) | 770/1,523 (50.56%) |
+| Selected mean CPL | 164.20 | 142.41 |
+| First-prompt candidate mean CPL | 239.45 | 239.45 |
+| Target/oracle mean CPL | 39.27 | 39.27 |
+| Mean CPL regret vs oracle | 125.40 | 103.82 |
+| Selected high-risk moves | 553/1,523 | 466/1,523 |
+| First-prompt high-risk moves | 752/1,523 | 752/1,523 |
+| Selected blunders | 386/1,523 | 325/1,523 |
+| First-prompt blunders | 538/1,523 | 538/1,523 |
+| High-regret cases | 336/1,523 | 278/1,523 |
+| Missed-good cases | 284/1,523 | 234/1,523 |
 
 Interpretation:
 
 - Pairwise contrastive training gives a much clearer offline signal than the previous list-ranking
   target.
-- The model beats balanced prompt-order baseline by about 13.2 percentage points.
-- It also reduces mean CPL by about 75 and selected blunders by 152 on the validation pairs.
-- This is still not runtime-ready: selected mean CPL 164 and 386/1,523 blunders are too high.
+- The 1,200-step model beats balanced prompt-order baseline by about 18.9 percentage points.
+- It reduces mean CPL by about 97 and selected blunders by 213 on the validation pairs.
+- Longer training improved every tracked validation metric versus 400 steps, without parse/legal
+  regression.
+- This is still not runtime-ready: selected mean CPL 142 and 325/1,523 blunders are too high.
 - The next experiment should keep the pairwise target, scale realistic Qwen candidate pairs, and
-  either train longer or use pairwise scoring as an intermediate signal for a list selector.
+  test pairwise scoring as an intermediate signal for a multi-candidate selector offline.
 
 ## 10. Offline Evaluation Gates
 
@@ -1061,19 +1078,21 @@ Benchmarks:
 
 The initial offline ranking proof is positive but not strong enough for arena runtime. The 1k fresh
 policy-candidate probe improved the hard-case regression numbers, but regressed the normal
-validation set. The pairwise contrastive probe is more promising: it beats balanced prompt-order
-baseline by about 13.2 percentage points and cuts validation-pair blunders from 538 to 386.
+validation set. The pairwise contrastive probe is more promising: the 1,200-step adapter beats
+balanced prompt-order baseline by about 18.9 percentage points and cuts validation-pair blunders
+from 538 to 325.
 
 The next action should still be data/model-quality work rather than runtime code:
 
-1. Scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the Stockfish cache.
-2. Build pairwise examples only from positions with at least one safe Qwen candidate and at least
+1. Add an offline pairwise-composed ranking evaluator that applies the pairwise adapter to all
+   candidate pairs in a normal multi-candidate choice row and selects the move with the most
+   pairwise wins or best aggregate margin.
+2. Run that evaluator on the frozen normal choice validation set and hard-case regression set.
+3. Scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the Stockfish cache.
+4. Build pairwise examples only from positions with at least one safe Qwen candidate and at least
    one unsafe Qwen candidate; single-candidate positions add little ranking signal.
-3. Keep the existing validation and hard-case regression sets frozen, and add a frozen pairwise
+5. Keep the existing validation and hard-case regression sets frozen, and add a frozen pairwise
    validation/test report.
-4. Train the small Qwen2.5 1.5B pairwise selector for 800-1,200 steps as a data-quality check.
-5. If pairwise validation top-1 clears 70% and selected blunders drop materially, test how to
-   compose pairwise preferences into a multi-candidate selector offline.
 6. Consider a Qwen3.5 9B LoRA critic/selector only after the small selector proves the data format
    scales.
 7. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
@@ -1231,3 +1250,25 @@ training run.
   list-choice SFT for the small selector. It is not runtime-ready yet, but the
   next training iteration should scale this pairwise format rather than return
   to the previous list-only target.
+
+2026-06-19 pairwise 1,200-step continuation:
+
+- Trained a longer local ignored adapter on the same pairwise train split:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - training: 1,200 steps, 0.7993 epoch, train loss 0.05627.
+- Full pairwise validation result on the same 1,523 examples:
+  - parse 100.0%, legal 100.0%, candidate-list 100.0%;
+  - top-1 target match 1,058/1,523 (69.47%);
+  - selected mean CPL 142.41 vs first-prompt 239.45 and oracle 39.27;
+  - selected blunders 325/1,523 vs first-prompt 538/1,523;
+  - selected high-risk moves 466/1,523 vs first-prompt 752/1,523.
+- Delta vs 400-step pairwise adapter:
+  - top-1 +87 examples, +5.71 percentage points;
+  - selected mean CPL improved by 21.79;
+  - selected blunders down by 61;
+  - high-regret cases down by 58.
+- Conclusion: longer pairwise training scales positively and is close to the
+  70% validation target, but it still needs lower CPL/blunder tail before
+  runtime integration. The next concrete step should test pairwise-composed
+  ranking on multi-candidate choice rows offline.
