@@ -1666,3 +1666,42 @@ training run.
   - Next useful experiment is either a confidence-gated selector that keeps the generator's first
     move unless the pairwise vote margin is strong, or more training data from actual runtime
     candidate prompts rather than offline choice rows.
+
+2026-06-20 runtime candidate data audit:
+
+- Updated `finetune.build_critic_ranker_dataset` so candidates mined from runtime
+  `candidate_pairwise` metadata are labeled as `arena_candidate_pairwise` instead of the generic
+  `arena_candidate`.
+- Updated `finetune.analyze_critic_ranker_dataset` so `arena_candidate_pairwise` counts as a Qwen
+  generator candidate source.
+- Built local ignored Stockfish-labeled runtime candidate datasets from the short smokes:
+  - n=3 ranker rows:
+    `data/finetune/runtime_pairwise_smoke_n3_ranker.jsonl`;
+  - n=5 ranker rows:
+    `data/finetune/runtime_pairwise_smoke_n5_ranker.jsonl`.
+- n=3 dataset:
+  - 172 rows from 98 positions;
+  - source counts: 72 `arena_candidate_pairwise`, 90 `arena_move`, 10 `arena_blunder`;
+  - risk counts: 79 good, 50 playable, 22 mistake, 21 blunder;
+  - mixed safe/unsafe positions: 13/98;
+  - first generator candidate mean CPL: 126.68 on 39 positions;
+  - oracle candidate mean CPL: 66.74;
+  - oracle gain vs first generator: 57.03 CPL on 39 positions.
+- n=5 dataset:
+  - 206 rows from 98 positions;
+  - source counts: 106 `arena_candidate_pairwise`, 91 `arena_move`, 9 `arena_blunder`;
+  - risk counts: 105 good, 45 playable, 32 mistake, 24 blunder;
+  - mixed safe/unsafe positions: 20/98;
+  - first generator candidate mean CPL: 148.06 on 33 positions;
+  - oracle candidate mean CPL: 61.80;
+  - oracle gain vs first generator: 100.12 CPL on 33 positions.
+- Pairwise rows available after safe-vs-unsafe filtering:
+  - n=3: 19 pairwise examples from 11/98 positions;
+  - n=5: 63 pairwise examples from 20/98 positions.
+- Interpretation:
+  - The runtime candidate lists do contain enough better alternatives to justify continuing the
+    learned-selector direction.
+  - The current smoke data is far too small for another training run.
+  - The key next data step is to collect thousands of runtime candidate prompts from real
+    Qwen-in-arena positions, label those candidates, and train/evaluate on that distribution. The
+    existing offline pairwise data was too optimistic for runtime transfer.

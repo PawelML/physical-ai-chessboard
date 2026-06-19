@@ -11,6 +11,11 @@ from typing import Any
 
 SAFE_RISKS = {"good", "playable"}
 UNSAFE_RISKS = {"mistake", "blunder"}
+GENERATOR_CANDIDATE_SOURCES = {
+    "arena_candidate",
+    "arena_candidate_pairwise",
+    "policy_sample",
+}
 
 
 @dataclass(frozen=True)
@@ -151,10 +156,10 @@ def _arena_final(candidates: list[CandidateRow]) -> CandidateRow | None:
 
 def _first_generator_candidate(candidates: list[CandidateRow]) -> CandidateRow | None:
     generator_candidates = [
-            candidate
-            for candidate in candidates
-            if (
-            candidate.source in {"arena_candidate", "policy_sample"}
+        candidate
+        for candidate in candidates
+        if (
+            candidate.source in GENERATOR_CANDIDATE_SOURCES
             and candidate.candidate_rank_in_generator is not None
         )
     ]

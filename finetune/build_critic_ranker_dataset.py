@@ -387,6 +387,7 @@ def _metadata_candidate_specs(
         metadata = _json_object(row["reranker_metadata"])
         if metadata.get("regime") != "llm_deliberative":
             continue
+        mode = metadata.get("mode")
         candidates = metadata.get("candidate_legal_moves")
         if not isinstance(candidates, list):
             continue
@@ -398,7 +399,7 @@ def _metadata_candidate_specs(
             yield CandidateSpec(
                 fen_before=str(row["fen_before"]),
                 candidate_uci=move_text,
-                source="arena_candidate",
+                source=_metadata_candidate_source(mode),
                 candidate_rank_in_generator=index,
                 generator_idea=raw.get("idea") if raw else None,
                 source_run_id=int(row["run_id"]),
@@ -406,6 +407,12 @@ def _metadata_candidate_specs(
                 source_move_id=int(row["move_id"]) if row["move_id"] is not None else None,
                 source_attempt_id=int(row["attempt_id"]),
             )
+
+
+def _metadata_candidate_source(mode: object) -> str:
+    if mode == "candidate_pairwise":
+        return "arena_candidate_pairwise"
+    return "arena_candidate"
 
 
 def _stockfish_best_specs(
