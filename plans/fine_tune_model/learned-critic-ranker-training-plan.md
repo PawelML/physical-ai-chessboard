@@ -636,7 +636,25 @@ If that answer is yes, the approach has a realistic path to reducing blunders/ga
   - risk: 33 good, 18 playable, 6 mistake, 9 blunder;
   - source: 20 arena_move, 19 arena_candidate, 11 stockfish_good,
     15 random_legal, 1 arena_blunder.
+- Added `finetune/analyze_critic_ranker_dataset.py`.
+- Built a larger local ignored pilot dataset from fixed candidate-critic runs `24`
+  and `25`:
+  - command uses `--max-positions 200`, `--max-candidates-per-position 6`,
+    `--random-legal-per-position 1`, and `--stockfish-nodes 50000`;
+  - output: `data/finetune/critic_ranker_pilot_fixed_200.jsonl`;
+  - metadata: `data/finetune/critic_ranker_pilot_fixed_200.meta.json`;
+  - analysis: `data/finetune/critic_ranker_pilot_fixed_200.analysis.json`;
+  - result: 652 candidate rows from 200 positions.
+- Pilot signal:
+  - 56/200 positions include Qwen-generated candidate alternatives;
+  - 113/200 positions include both safe and unsafe candidates;
+  - final arena moves: mean CPL 94.09, 31 blunders;
+  - oracle candidate from each candidate set: mean CPL 7.41, 4 blunders;
+  - oracle vs final move: mean CPL reduction 87.37, improved by CPL in 113/200
+    positions;
+  - oracle vs first generator candidate: mean CPL reduction 102.88 over 56
+    positions with Qwen candidates.
 
-Next implementation step: add offline critic-ranker evaluation on this JSONL format
-before starting a training run, so we can measure whether a learned scorer improves
-candidate ordering without relying on noisy game W-D-L.
+Next implementation step: run a small 100-200 step critic fine-tune and evaluate
+whether learned scores improve candidate ordering against the first-generator and
+final-move baselines before wiring any runtime mode.
