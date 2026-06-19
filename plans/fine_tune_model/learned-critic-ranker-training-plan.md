@@ -1743,3 +1743,47 @@ training run.
   - Next scale-up target: sample thousands of positions from `arena.db`/recent benchmark DBs,
     label them with the ranker builder, then split by FEN and train/evaluate a selector on this
     runtime candidate distribution.
+
+2026-06-20 run18 300-position runtime sample:
+
+- Sampled candidate prompts directly from `arena.db`, `run_id=18`, using `qwen3.5:9b`.
+- Sampler configuration:
+  - max positions: 300;
+  - samples per position: 1;
+  - requested candidates: 5;
+  - temperature: 0.7;
+  - context: 4096.
+- Sampler result:
+  - 300 requests;
+  - 1027 legal unique policy candidate rows;
+  - 0 service errors;
+  - 34 positions produced no legal candidates;
+  - 266/300 positions produced at least one legal candidate.
+- Stockfish-labeled ranker dataset:
+  - path: `data/finetune/runtime_qwen35_9b_run18_300_ranker.jsonl` (ignored);
+  - 1462 rows from 300 positions;
+  - source counts: 932 `policy_sample`, 287 `arena_move`, 41 `arena_blunder`,
+    202 `stockfish_good`;
+  - risk counts: 475 good, 364 playable, 185 mistake, 438 blunder.
+- Analysis:
+  - positions with Qwen policy candidates: 260/300;
+  - mixed safe/unsafe positions: 218/300;
+  - arena final mean CPL: 81.05;
+  - first generator candidate mean CPL: 262.59 on 260 positions;
+  - oracle candidate mean CPL: 16.14;
+  - oracle gain vs first generator: 258.84 CPL on 260 positions;
+  - oracle gain vs arena final: 76.15 CPL on 300 positions.
+- Pairwise dataset:
+  - path: `data/finetune/runtime_qwen35_9b_run18_300_pairwise.jsonl` (ignored);
+  - 774 safe-vs-unsafe rows from 218/300 positions;
+  - pair risks: 348 blunder/good, 179 blunder/playable, 204 good/mistake,
+    43 mistake/playable;
+  - target prompt index is balanced: 391 at index 1, 383 at index 2.
+- Interpretation:
+  - This is the strongest evidence so far that the problem is selection, not move generation:
+    Qwen frequently emits a good move in the list, but its first legal candidate is often bad.
+  - A selector trained only on offline/non-runtime examples is likely underpowered for runtime
+    transfer; the next training dataset should be built primarily from these runtime-prompt
+    candidate rows.
+  - Scale target before another training run: at least 2k-5k positions sampled from large local
+    arena runs, then train/evaluate with a held-out FEN split from the same runtime distribution.
