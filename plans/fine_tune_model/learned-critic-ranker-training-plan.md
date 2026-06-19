@@ -1,7 +1,7 @@
 # Learned Critic/Ranker Training Plan
 
 Date: 2026-06-19
-Status: ready for implementation planning
+Status: implementation started
 Target model family: Qwen3.5 9B chess-tuned policy, plus optional smaller critic
 
 This plan defines the next training experiment after the LLM-only deliberation work. It is
@@ -561,12 +561,12 @@ This analysis is critical because W-D-L is noisy at 20 games.
 
 Dataset:
 
-- [ ] Add `finetune/build_critic_ranker_dataset.py`.
+- [x] Add `finetune/build_critic_ranker_dataset.py`.
 - [ ] Reuse `StockfishEvaluator` / `StockfishRewardScorer` and `(fen,uci)` cache.
-- [ ] Pull candidate rows from `attempts.reranker_metadata`.
+- [x] Pull candidate rows from `attempts.reranker_metadata`.
 - [ ] Add fresh policy candidate sampling mode.
-- [ ] Split by FEN, not candidate row.
-- [ ] Emit JSONL plus metadata summary.
+- [x] Split by FEN, not candidate row.
+- [x] Emit JSONL plus metadata summary.
 
 Training:
 
@@ -619,3 +619,24 @@ does the critic rank the safe candidate above the unsafe one?
 ```
 
 If that answer is yes, the approach has a realistic path to reducing blunders/game.
+
+## 17. Implementation Progress
+
+2026-06-19:
+
+- Added `finetune/build_critic_ranker_dataset.py`.
+- Added `tests/test_build_critic_ranker_dataset.py`.
+- Built a local ignored smoke dataset from arena run `25`:
+  - command uses `--max-positions 20`, `--max-candidates-per-position 6`,
+    `--random-legal-per-position 1`, and `--stockfish-nodes 50000`;
+  - output: `data/finetune/critic_ranker_smoke.jsonl`;
+  - metadata: `data/finetune/critic_ranker_smoke.meta.json`;
+  - result: 66 candidate rows from 20 positions.
+- Smoke row distribution:
+  - risk: 33 good, 18 playable, 6 mistake, 9 blunder;
+  - source: 20 arena_move, 19 arena_candidate, 11 stockfish_good,
+    15 random_legal, 1 arena_blunder.
+
+Next implementation step: add offline critic-ranker evaluation on this JSONL format
+before starting a training run, so we can measure whether a learned scorer improves
+candidate ordering without relying on noisy game W-D-L.
