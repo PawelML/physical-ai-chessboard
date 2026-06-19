@@ -487,6 +487,60 @@ Interpretation:
 - the gap to oracle is still large, so runtime integration should wait until selected mean CPL is
   closer to 100 and selected blunders are below about 70/408 on this validation style.
 
+### 9.3 Completed 800-Step Hard-Case Mining
+
+Extended `finetune/analyze_critic_choice_predictions.py` to emit aggregate error diagnostics and a
+JSONL file of the worst validation cases:
+
+```text
+outputs/finetune/critic_choice_qwen25_15b_large_mixed_2epoch_hard_cases.jsonl
+```
+
+Hard-case command:
+
+```bash
+python -m finetune.analyze_critic_choice_predictions \
+  --dataset data/finetune/critic_choice_large_mixed_5k.validation.jsonl \
+  --predictions outputs/finetune/critic_choice_qwen25_15b_large_mixed_2epoch_predictions.jsonl \
+  --output outputs/finetune/critic_choice_qwen25_15b_large_mixed_2epoch_analysis.json \
+  --hard-cases-output outputs/finetune/critic_choice_qwen25_15b_large_mixed_2epoch_hard_cases.jsonl \
+  --hard-cases-limit 100 \
+  --hard-regret-threshold 200
+```
+
+Additional validation diagnostics:
+
+- improved vs first candidate: 200/408;
+- worsened vs first candidate: 99/408;
+- tied first candidate: 47/408;
+- mean CPL regret vs oracle: 139.38;
+- selected high-risk moves: 156/408;
+- selected blunders: 95/408;
+- missed-good cases: 126/408;
+- high-regret cases (`selected_cpl - oracle_cpl >= 200`): 93/408.
+
+Risk transitions show the main failure mode:
+
+| Oracle risk -> selected risk | Count |
+| --- | ---: |
+| good -> good | 163 |
+| good -> playable | 50 |
+| good -> mistake | 54 |
+| good -> blunder | 72 |
+| playable -> playable | 39 |
+| playable -> mistake | 6 |
+| playable -> blunder | 23 |
+| mistake -> mistake | 1 |
+
+The top hard cases are not parser or legality failures. They are ranker preference failures where a
+good move is already visible in the candidate list, but the model selects a random-looking blunder.
+The next dataset iteration should oversample these exact structures:
+
+- one or more high-CPL random/legal decoys;
+- at least one good or playable candidate in the same list;
+- target good move sometimes appears at prompt index 1, sometimes later;
+- include repeated hard-case FENs with shuffled candidate order to reduce position/order shortcuts.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
@@ -696,7 +750,7 @@ Benchmarks:
 The initial offline ranking proof is positive but not strong enough for arena runtime. The next
 action should improve data quality before writing `learned_critic` runtime code:
 
-1. Mine the 800-step false positives/false negatives from validation predictions.
+1. Use the mined 800-step hard cases as regression/mining seeds for the next dataset.
 2. Add fresh Qwen policy candidate sampling so the dataset contains more realistic Qwen alternatives
    and fewer purely random legal controls.
 3. Build a 25k-position pilot dataset with the Stockfish evaluation cache.

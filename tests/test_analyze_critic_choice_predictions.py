@@ -38,7 +38,12 @@ def test_analyze_critic_choice_predictions_reports_candidate_cpl(tmp_path: Path)
         ],
     )
 
-    report = analyze_predictions(dataset_path=dataset, predictions_path=predictions)
+    report = analyze_predictions(
+        dataset_path=dataset,
+        predictions_path=predictions,
+        hard_cases_limit=10,
+        hard_regret_threshold=200,
+    )
 
     assert report["examples"] == 2
     assert report["candidate_ok"] == 2
@@ -48,6 +53,24 @@ def test_analyze_critic_choice_predictions_reports_candidate_cpl(tmp_path: Path)
     assert report["first_prompt_candidate_mean_centipawn_loss"] == 40.0
     assert report["selected_risk_counts"] == {"blunder": 1, "good": 1}
     assert report["target_prompt_index"] == {1: 1, 2: 1}
+    assert report["risk_transitions"] == {"good->blunder": 1, "good->good": 1}
+    assert report["selected_high_risk_count"] == 1
+    assert report["mean_cpl_regret_vs_oracle"] == 250.0
+    assert report["improved_vs_first_count"] == 1
+    assert report["worsened_vs_first_count"] == 1
+    assert report["hard_case_counts"] == {
+        "high_regret": 1,
+        "missed_good": 1,
+        "selected_blunder": 1,
+    }
+    assert len(report["hard_cases"]) == 1
+    assert report["hard_cases"][0]["categories"] == [
+        "selected_blunder",
+        "missed_good",
+        "high_regret",
+    ]
+    assert report["hard_cases"][0]["predicted_move"] == "f2f3"
+    assert report["hard_cases"][0]["cpl_regret_vs_oracle"] == 500
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
