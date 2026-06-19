@@ -27,14 +27,22 @@ Current implementation status:
 
 - candidate-level ranker dataset builder exists and can cache offline Stockfish evaluations;
 - position-level choice dataset builder exists for direct "choose the best candidate" SFT;
-- first large 5k-position choice experiment shows a real offline signal:
+- first large 5k-position choice experiment showed a real offline signal:
   - generator-first mean CPL: 244.85;
   - 400-step LoRA selected mean CPL: 168.76;
   - 800-step LoRA selected mean CPL: 159.69;
   - oracle target mean CPL: 21.65.
+- the current strongest offline selector is the pairwise-composed 1,200-step adapter on the
+  policy1k validation split:
+  - pairwise-composed selected mean CPL: 116.64;
+  - top-1 oracle: 170/408 (41.67%);
+  - selected blunders: 72/408;
+  - selected high-risk moves: 117/408.
+  - hard-case regression: 81/300 top-1, 224.93 selected mean CPL, 89/300 selected blunders.
 
-This is not yet strong enough to wire into runtime, but it is better than prompt-only ranking and
-is worth one more dataset/model-quality iteration before arena games.
+This is a meaningful offline improvement over prompt-only ranking and direct list-choice SFT. It is
+still not ready to trust in arena runtime until latency/throughput is fixed and a small arena smoke
+confirms the offline signal transfers to full games.
 
 ## 1. Research Question
 
@@ -937,6 +945,113 @@ Interpretation:
 - This smoke is too small to justify runtime integration, but it is strong enough to run the full
   408-row validation and hard-case regression composition next.
 
+### 9.9 Completed Pairwise-Composed Full Normal Validation
+
+Full expansion command:
+
+```bash
+python -m finetune.build_pairwise_comparison_eval \
+  --input data/finetune/critic_choice_large_mixed_plus_policy1k.validation.jsonl \
+  --output data/finetune/critic_choice_large_mixed_plus_policy1k.validation_pairwise_eval.jsonl \
+  --metadata-output data/finetune/critic_choice_large_mixed_plus_policy1k.validation_pairwise_eval.meta.json
+```
+
+Expansion result:
+
+- source choice rows: 408/408;
+- pair rows: 5,112;
+- source candidate counts: 2:5, 3:5, 4:26, 5:144, 6:220, 7:4, 8:4;
+- pair target prompt index: position 1 = 2,574, position 2 = 2,538.
+
+Pairwise prediction used:
+
+```text
+outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora
+```
+
+Pair-level result on 5,112 generated pairs:
+
+- parse/legal/candidate-list: 100.0%;
+- pair target match: 3,121/5,112 (61.05%).
+
+Composed selection result on the original 408 multi-candidate validation rows:
+
+| Metric | First candidate | List-choice 800-step | Pairwise-composed 1,200-step |
+| --- | ---: | ---: | ---: |
+| Parse/legal | n/a | 100.0% / 99.75% | 100.0% / 100.0% at pair level |
+| Candidate-list rate | n/a | 99.75% | 100.0% at pair level |
+| Top-1 oracle | n/a | 154/408 (37.75%) | 170/408 (41.67%) |
+| Mean CPL | 244.85 | 170.93 | 116.64 |
+| Oracle mean CPL | 21.65 | 21.65 | 21.65 |
+| Mean CPL regret vs oracle | n/a | 149.28 | 96.67 |
+| High-risk selected | 222/408 | 160/408 | 117/408 |
+| Blunders selected | 151/408 | 101/408 | 72/408 |
+| High-regret cases | n/a | unknown | 58/408 |
+| Missed-good cases | n/a | unknown | 84/408 |
+
+Interpretation:
+
+- The 100-row smoke result transfers to the full frozen validation set.
+- The pairwise-composed selector is materially better than the direct list-choice 800-step adapter
+  on all tracked quality metrics: +16 top-1 selections, -54.29 mean CPL, -29 blunders, and
+  -43 high-risk selections.
+- Pair-level accuracy remains modest at 61.05%, but majority-style composition over all candidate
+  pairs produces a stronger final selector than asking the model to choose from the whole list.
+- This is the first offline learned-selector result that looks plausibly useful for reducing
+  blunders/game. It still needs hard-case regression before runtime integration, because the
+  validation set is not enough to prove the tail is controlled.
+
+### 9.10 Completed Pairwise-Composed Hard-Case Regression
+
+Hard-case expansion command:
+
+```bash
+python -m finetune.build_pairwise_comparison_eval \
+  --input data/finetune/critic_choice_large_mixed_5k_hardcase_eval.jsonl \
+  --output data/finetune/critic_choice_large_mixed_5k_hardcase_pairwise_eval.jsonl \
+  --metadata-output data/finetune/critic_choice_large_mixed_5k_hardcase_pairwise_eval.meta.json
+```
+
+Expansion result:
+
+- source choice rows: 300/300;
+- pair rows: 3,909;
+- source candidate counts: 4:18, 5:93, 6:183, 7:6;
+- pair target prompt index: position 1 = 1,903, position 2 = 2,006.
+
+Pair-level result on 3,909 generated pairs:
+
+- parse/legal/candidate-list: 100.0%;
+- pair target match: 2,105/3,909 (53.85%).
+
+Composed selection result on the original 300 hard-case regression rows:
+
+| Metric | First candidate | List-choice 800-step | Pairwise-composed 1,200-step |
+| --- | ---: | ---: | ---: |
+| Parse/legal | n/a | 100.0% / 100.0% | 100.0% / 100.0% at pair level |
+| Candidate-list rate | n/a | 100.0% | 100.0% at pair level |
+| Top-1 oracle | n/a | 24/300 (8.0%) | 81/300 (27.0%) |
+| Mean CPL | 243.40 | 352.44 | 224.93 |
+| Oracle mean CPL | 14.31 | 14.31 | 14.31 |
+| Mean CPL regret vs oracle | n/a | 338.13 | 210.62 |
+| High-risk selected | 167/300 | 254/300 | 142/300 |
+| Blunders selected | 103/300 | 159/300 | 89/300 |
+| High-regret cases | n/a | 236/300 | 130/300 |
+| Missed-good cases | n/a | 243/300 | 133/300 |
+
+Interpretation:
+
+- The pairwise-composed selector passes the previous hard-case minimum gate: top-1 is above 20%,
+  selected mean CPL is below 250, and selected blunders are below 100/300.
+- This is a large improvement over the direct list-choice 800-step adapter, especially in the
+  failure tail: -127.51 mean CPL, -112 high-risk selections, and -70 blunders.
+- It is also better than the first candidate baseline in mean CPL and blunders, although it still
+  worsens 103/300 rows versus first prompt order. The selector is useful but not yet uniformly
+  reliable.
+- Runtime integration should not start as a full benchmark mode yet. The immediate engineering
+  need is a cached/batched pairwise scorer so offline iteration and a tiny arena smoke are not
+  bottlenecked by one-pair-at-a-time inference.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
@@ -1144,27 +1259,45 @@ Benchmarks:
 
 ## 16. Recommended Next Action
 
-The initial offline ranking proof is positive but not strong enough for arena runtime. The 1k fresh
-policy-candidate probe improved the hard-case regression numbers, but regressed the normal
-validation set. The pairwise contrastive probe is more promising: the 1,200-step adapter beats
-balanced prompt-order baseline by about 18.9 percentage points and cuts validation-pair blunders
-from 538 to 325.
+The initial offline ranking proof is positive but was not strong enough for arena runtime. The 1k
+fresh policy-candidate probe improved the hard-case regression numbers, but regressed the normal
+validation set. The pairwise contrastive probe is stronger: the 1,200-step adapter beats balanced
+prompt-order baseline by about 18.9 percentage points on dedicated validation pairs, cuts
+validation-pair blunders from 538 to 325, and the pairwise-composed selector transfers to the full
+408-row normal validation set.
 
-The next action should still be data/model-quality work rather than runtime code:
+The current best offline selector is:
 
-1. Run the pairwise-composed evaluator on the full frozen normal choice validation set
-   (408 rows) and the hard-case regression set (300 rows).
-2. If the full composed result keeps selected mean CPL below the direct list-choice adapter and
-   cuts blunders materially, add a cached/batched evaluator so this can be iterated faster.
-3. Scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the Stockfish cache.
-4. Build pairwise examples only from positions with at least one safe Qwen candidate and at least
+```text
+Qwen2.5 1.5B pairwise critic, 1,200-step LoRA, composed by pairwise wins
+```
+
+On the frozen 408-row normal validation set it reaches 170/408 top-1 oracle choices, 116.64
+selected mean CPL, 72/408 selected blunders, and 117/408 selected high-risk moves. This beats the
+direct list-choice 800-step adapter on the same validation style. On the 300-row hard-case
+regression set it reaches 81/300 top-1, 224.93 selected mean CPL, 89/300 selected blunders, and
+142/300 selected high-risk moves, beating the direct list-choice adapter by a wide margin.
+
+The next action should be runtime-enabling engineering plus a very small arena smoke, not a full
+benchmark mode yet:
+
+1. Add a cached/batched pairwise scorer so composed selection can evaluate all pairs for one
+   candidate list without one Python/model call per pair.
+2. Add a hidden/experimental arena move-source mode that generates Qwen candidates, runs the
+   learned pairwise selector, logs every pair decision, and falls back to generator order on any
+   model failure. Keep it separate from existing leaderboard modes.
+3. Run only a tiny 5-game Stockfish smoke first, measuring accepted-move latency, candidate count,
+   changed-move rate, illegal/malformed count, average CPL, and blunders/game.
+4. If the tiny smoke is mechanically clean and not slower than an acceptable threshold, run the
+   20-game Stockfish comparison against the GRPO single-shot and previous candidate+critic runs.
+5. In parallel, scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the
+   Stockfish cache.
+6. Build pairwise examples only from positions with at least one safe Qwen candidate and at least
    one unsafe Qwen candidate; single-candidate positions add little ranking signal.
-5. Keep the existing validation and hard-case regression sets frozen, and add a frozen pairwise
+7. Keep the existing validation and hard-case regression sets frozen, and add a frozen pairwise
    validation/test report.
-6. Consider a Qwen3.5 9B LoRA critic/selector only after the small selector proves the data format
+8. Consider a Qwen3.5 9B LoRA critic/selector only after the small selector proves the data format
    scales.
-7. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
-   blunders are materially below the current 95/408 normal choice validation baseline.
 
 The most important early signal is not Elo. It is:
 
@@ -1372,3 +1505,61 @@ training run.
 - Conclusion: pairwise-composed ranking is a better offline selector than the
   direct list-choice adapter on this smoke slice. The next step is the full
   408-row validation plus the 300-row hard-case regression set.
+
+2026-06-19 pairwise-composed full validation:
+
+- Built the full local ignored pairwise expansion:
+  - source: `data/finetune/critic_choice_large_mixed_plus_policy1k.validation.jsonl`;
+  - output:
+    `data/finetune/critic_choice_large_mixed_plus_policy1k.validation_pairwise_eval.jsonl`;
+  - result: 5,112 pair rows from 408 source choice rows.
+- Ran pairwise predictions with:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - output:
+    `outputs/finetune/critic_choice_large_mixed_plus_policy1k_validation_pairwise_composed_1200_pair_predictions.jsonl`.
+- Pair-level result:
+  - parse 100.0%, legal 100.0%, candidate-list 100.0%;
+  - pair target match 3,121/5,112 (61.05%).
+- Composed selector result on the original 408 choice rows:
+  - top-1 oracle 170/408 (41.67%);
+  - selected mean CPL 116.64;
+  - selected blunders 72/408;
+  - selected high-risk moves 117/408.
+- Full-validation direct list-choice 800-step baseline:
+  - top-1 oracle 154/408 (37.75%);
+  - selected mean CPL 170.93;
+  - selected blunders 101/408;
+  - selected high-risk moves 160/408.
+- Conclusion: the pairwise-composed selector also wins on the full frozen
+  normal validation set, not only the 100-row smoke slice. The next required
+  gate is hard-case regression before any runtime arena integration.
+
+2026-06-19 pairwise-composed hard-case regression:
+
+- Built the local ignored hard-case pairwise expansion:
+  - source: `data/finetune/critic_choice_large_mixed_5k_hardcase_eval.jsonl`;
+  - output: `data/finetune/critic_choice_large_mixed_5k_hardcase_pairwise_eval.jsonl`;
+  - result: 3,909 pair rows from 300 source hard-case choice rows.
+- Ran pairwise predictions with:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - output:
+    `outputs/finetune/critic_choice_large_mixed_5k_hardcase_pairwise_composed_1200_pair_predictions.jsonl`.
+- Pair-level result:
+  - parse 100.0%, legal 100.0%, candidate-list 100.0%;
+  - pair target match 2,105/3,909 (53.85%).
+- Composed selector result on the original 300 hard-case rows:
+  - top-1 oracle 81/300 (27.0%);
+  - selected mean CPL 224.93;
+  - selected blunders 89/300;
+  - selected high-risk moves 142/300.
+- Full hard-case direct list-choice 800-step baseline:
+  - top-1 oracle 24/300 (8.0%);
+  - selected mean CPL 352.44;
+  - selected blunders 159/300;
+  - selected high-risk moves 254/300.
+- Conclusion: the pairwise-composed selector passes the previously defined
+  hard-case gate and is the first learned selector worth a small runtime smoke.
+  Do not run a full benchmark yet; first add batched/cached scoring and measure
+  latency on a tiny arena run.
