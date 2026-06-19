@@ -9,9 +9,9 @@ import random
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TextIO
 
 import chess
 
@@ -35,6 +35,8 @@ class CriticRankerConfig:
     stockfish_path: str
     stockfish_nodes: int = 200_000
     stockfish_hash_mb: int = 128
+    stockfish_threads: int = 1
+    evaluation_cache: str | None = None
     run_ids: list[int] = field(default_factory=list)
     max_positions: int | None = None
     max_candidates_per_position: int = 6
@@ -42,6 +44,7 @@ class CriticRankerConfig:
     include_stockfish_best: bool = True
     max_opponent_replies: int = 40
     seed: int = 0
+    shuffle_positions: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,8 @@ class CriticRankerStats:
     dropped_illegal_candidate: int = 0
     dropped_candidate_limit: int = 0
     engine_evaluations: int = 0
+    evaluation_cache_hits: int = 0
+    evaluation_cache_misses: int = 0
     by_source: Counter[str] = field(default_factory=Counter)
     by_risk: Counter[str] = field(default_factory=Counter)
     by_split: Counter[str] = field(default_factory=Counter)
@@ -81,6 +86,8 @@ class CriticRankerStats:
             "dropped_illegal_candidate": self.dropped_illegal_candidate,
             "dropped_candidate_limit": self.dropped_candidate_limit,
             "engine_evaluations": self.engine_evaluations,
+            "evaluation_cache_hits": self.evaluation_cache_hits,
+            "evaluation_cache_misses": self.evaluation_cache_misses,
             "by_source": dict(sorted(self.by_source.items())),
             "by_risk": dict(sorted(self.by_risk.items())),
             "by_split": dict(sorted(self.by_split.items())),
@@ -96,6 +103,8 @@ def main() -> None:
         stockfish_path=str(args.stockfish_path),
         stockfish_nodes=args.stockfish_nodes,
         stockfish_hash_mb=args.stockfish_hash_mb,
+        stockfish_threads=args.stockfish_threads,
+        evaluation_cache=str(args.evaluation_cache) if args.evaluation_cache else None,
         run_ids=args.run_id,
         max_positions=args.max_positions,
         max_candidates_per_position=args.max_candidates_per_position,
@@ -103,17 +112,26 @@ def main() -> None:
         include_stockfish_best=not args.no_stockfish_best,
         max_opponent_replies=args.max_opponent_replies,
         seed=args.seed,
+        shuffle_positions=args.shuffle_positions,
     )
     evaluator = StockfishEvaluator(
         binary_path=config.stockfish_path,
         nodes=config.stockfish_nodes,
-        threads=1,
+        threads=config.stockfish_threads,
         hash_mb=config.stockfish_hash_mb,
     )
+    cached_evaluator: MoveEvaluator
+    if config.evaluation_cache is not None:
+        cached_evaluator = CachedMoveEvaluator(
+            evaluator,
+            cache_path=Path(config.evaluation_cache),
+        )
+    else:
+        cached_evaluator = evaluator
     try:
-        stats = build_critic_ranker_dataset(config, evaluator=evaluator)
+        stats = build_critic_ranker_dataset(config, evaluator=cached_evaluator)
     finally:
-        evaluator.close()
+        cached_evaluator.close()
     if config.metadata_output is not None:
         write_metadata_sidecar(Path(config.metadata_output), config=config, stats=stats)
     print(
@@ -139,8 +157,12 @@ def build_critic_ranker_dataset(
     finally:
         con.close()
 
+    position_items = list(candidates_by_fen.items())
+    if config.shuffle_positions:
+        rng.shuffle(position_items)
+
     with output_path.open("w", encoding="utf-8") as output_file:
-        for _fen, specs in candidates_by_fen.items():
+        for _fen, specs in position_items:
             if config.max_positions is not None and stats.positions_written >= config.max_positions:
                 break
             written_for_position = 0
@@ -165,7 +187,87 @@ def build_critic_ranker_dataset(
                 written_for_position += 1
             if written_for_position > 0:
                 stats.positions_written += 1
+    stats.evaluation_cache_hits = int(getattr(evaluator, "cache_hits", 0))
+    stats.evaluation_cache_misses = int(getattr(evaluator, "cache_misses", 0))
     return stats
+
+
+class CachedMoveEvaluator:
+    def __init__(self, inner: MoveEvaluator, *, cache_path: Path) -> None:
+        self.inner = inner
+        self.cache_path = cache_path
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self._cache = _load_evaluation_cache(cache_path)
+        self._handle: TextIO | None = None
+
+    def evaluate_move(self, board_before: chess.Board, move: chess.Move) -> EngineEvaluation:
+        fen = board_before.fen()
+        uci = move.uci()
+        key = _evaluation_cache_key(fen, uci)
+        cached = self._cache.get(key)
+        if cached is not None:
+            self.cache_hits += 1
+            return cached
+        self.cache_misses += 1
+        evaluation = self.inner.evaluate_move(board_before, move)
+        self._cache[key] = evaluation
+        self._append_cache_row(fen=fen, uci=uci, key=key, evaluation=evaluation)
+        return evaluation
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+        self.inner.close()
+
+    def _append_cache_row(
+        self,
+        *,
+        fen: str,
+        uci: str,
+        key: str,
+        evaluation: EngineEvaluation,
+    ) -> None:
+        if self._handle is None:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.cache_path.open("a", encoding="utf-8")
+        self._handle.write(
+            json.dumps(
+                {
+                    "key": key,
+                    "fen_before": fen,
+                    "candidate_uci": uci,
+                    "evaluation": asdict(evaluation),
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        self._handle.flush()
+
+
+def _load_evaluation_cache(cache_path: Path) -> dict[str, EngineEvaluation]:
+    if not cache_path.exists():
+        return {}
+    cache: dict[str, EngineEvaluation] = {}
+    with cache_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+                key = str(payload["key"])
+                evaluation_payload = payload["evaluation"]
+                if isinstance(evaluation_payload, dict):
+                    cache[key] = EngineEvaluation(**evaluation_payload)
+            except (KeyError, TypeError, json.JSONDecodeError):
+                continue
+    return cache
+
+
+def _evaluation_cache_key(fen: str, uci: str) -> str:
+    return hashlib.sha256(f"{fen}|{uci}".encode()).hexdigest()
 
 
 def _candidate_specs_by_fen(
@@ -538,6 +640,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stockfish-path", type=Path, required=True)
     parser.add_argument("--stockfish-nodes", type=int, default=200_000)
     parser.add_argument("--stockfish-hash-mb", type=int, default=128)
+    parser.add_argument("--stockfish-threads", type=int, default=1)
+    parser.add_argument("--evaluation-cache", type=Path)
     parser.add_argument("--run-id", type=int, action="append", default=[])
     parser.add_argument("--max-positions", type=int)
     parser.add_argument("--max-candidates-per-position", type=int, default=6)
@@ -545,6 +649,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-stockfish-best", action="store_true")
     parser.add_argument("--max-opponent-replies", type=int, default=40)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--shuffle-positions", action="store_true")
     return parser.parse_args()
 
 

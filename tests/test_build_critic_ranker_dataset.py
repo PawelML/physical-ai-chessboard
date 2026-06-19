@@ -8,6 +8,7 @@ import chess
 
 from arena_core.evaluators.stockfish import EngineEvaluation
 from finetune.build_critic_ranker_dataset import (
+    CachedMoveEvaluator,
     CriticRankerConfig,
     build_critic_ranker_dataset,
     risk_from_evaluation,
@@ -86,6 +87,37 @@ def test_risk_and_score_bucket_engine_evaluations() -> None:
         score_from_evaluation(_evaluation(move="e2e4", cpl=None, classification="mate_missed"))
         == 0
     )
+
+
+def test_cached_move_evaluator_reuses_persisted_evaluations(tmp_path: Path) -> None:
+    cache_path = tmp_path / "eval_cache.jsonl"
+    board = chess.Board(START_FEN)
+    move = chess.Move.from_uci("e2e4")
+    first_inner = FakeEvaluator(
+        {"e2e4": _evaluation(move="e2e4", cpl=120, classification="inaccuracy")}
+    )
+    first = CachedMoveEvaluator(first_inner, cache_path=cache_path)
+
+    first_eval = first.evaluate_move(board, move)
+    second_eval = first.evaluate_move(board, move)
+    first.close()
+
+    assert first_eval.centipawn_loss == 120
+    assert second_eval.centipawn_loss == 120
+    assert first_inner.calls == 1
+    assert first.cache_misses == 1
+    assert first.cache_hits == 1
+
+    second_inner = FakeEvaluator(
+        {"e2e4": _evaluation(move="e2e4", cpl=999, classification="blunder")}
+    )
+    second = CachedMoveEvaluator(second_inner, cache_path=cache_path)
+    cached_eval = second.evaluate_move(board, move)
+    second.close()
+
+    assert cached_eval.centipawn_loss == 120
+    assert second_inner.calls == 0
+    assert second.cache_hits == 1
 
 
 class FakeEvaluator:

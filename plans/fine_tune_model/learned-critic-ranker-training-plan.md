@@ -23,6 +23,19 @@ Stockfish is used offline to create labels. At play time, the arena may call onl
 the learned critic model, and `python-chess` for legal move mechanics. No Stockfish call is allowed
 inside the move source during games.
 
+Current implementation status:
+
+- candidate-level ranker dataset builder exists and can cache offline Stockfish evaluations;
+- position-level choice dataset builder exists for direct "choose the best candidate" SFT;
+- first large 5k-position choice experiment shows a real offline signal:
+  - generator-first mean CPL: 244.85;
+  - 400-step LoRA selected mean CPL: 168.76;
+  - 800-step LoRA selected mean CPL: 159.69;
+  - oracle target mean CPL: 21.65.
+
+This is not yet strong enough to wire into runtime, but it is better than prompt-only ranking and
+is worth one more dataset/model-quality iteration before arena games.
+
 ## 1. Research Question
 
 Can a learned critic trained from offline Stockfish labels reduce Qwen's blunder tail when used to
@@ -390,7 +403,10 @@ python -m finetune.build_critic_ranker_dataset \
   --max-positions 5000 \
   --max-candidates-per-position 6 \
   --stockfish-path vendor/stockfish/root/usr/games/stockfish \
-  --stockfish-nodes 200000
+  --stockfish-nodes 200000 \
+  --stockfish-threads 4 \
+  --evaluation-cache data/finetune/critic_ranker_smoke.eval_cache.jsonl \
+  --shuffle-positions
 
 python -m finetune.train_critic_ranker \
   --dataset data/finetune/critic_ranker_smoke.jsonl \
@@ -398,6 +414,78 @@ python -m finetune.train_critic_ranker \
   --output-dir outputs/finetune/critic_ranker_smoke \
   --max-steps 200
 ```
+
+### 9.1 Completed Large Choice Smoke
+
+Built a larger mixed candidate dataset from runs 15-21 and 23-25:
+
+```text
+data/finetune/critic_ranker_large_mixed_5k.jsonl
+```
+
+Builder settings:
+
+- 5,000 positions from 21,012 seen positions;
+- 26,344 candidate rows;
+- max 8 candidates per position;
+- 4 random legal controls per position;
+- Stockfish nodes: 25,000;
+- Stockfish threads: 4;
+- persistent evaluation cache enabled;
+- deterministic shuffled position order with seed 7.
+
+Dataset composition:
+
+| Field | Counts |
+| --- | --- |
+| risk | blunder 7,647; good 6,135; mistake 4,201; playable 8,361 |
+| source | arena_blunder 723; arena_candidate 87; arena_move 4,396; random_legal 17,662; stockfish_good 3,476 |
+| split | train 21,012; validation 2,716; test 2,616 |
+
+Converted to position-level choice rows:
+
+```text
+data/finetune/critic_choice_large_mixed_5k.jsonl
+```
+
+Choice dataset:
+
+- 4,007 positions;
+- train 3,188;
+- validation 408;
+- test 411;
+- target risk: good 3,254; playable 750; mistake 3.
+
+### 9.2 Completed Large Choice LoRA Results
+
+Both runs used:
+
+- base model: `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`;
+- max sequence length: 1536;
+- batch size: 2;
+- gradient accumulation: 4;
+- learning rate: `2e-4`;
+- validation examples: 408;
+- target format: strict `{"move":"<uci>"}` from the choice dataset.
+
+| Adapter | Steps | Epochs | Parse | Legal | Top-1 oracle | Selected mean CPL | Selected blunders |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `critic_choice_qwen25_15b_large_mixed_lora` | 400 | 1.00 | 100.0% | 99.75% | 37.25% | 168.76 | 102 |
+| `critic_choice_qwen25_15b_large_mixed_2epoch_lora` | 800 | 2.01 | 100.0% | 100.0% | 38.24% | 159.69 | 95 |
+
+Reference points on the same 408 validation positions:
+
+- first prompt candidate mean CPL: 244.85;
+- oracle target mean CPL: 21.65;
+- first prompt candidate blunders: 151;
+- 800-step selected blunders: 95.
+
+Interpretation:
+
+- the learned selector is clearly better than generator order offline;
+- the second epoch helps modestly instead of collapsing;
+- the gap to oracle is still large, so runtime integration should wait until selected mean CPL is
+  closer to 100 and selected blunders are below about 70/408 on this validation style.
 
 ## 10. Offline Evaluation Gates
 
@@ -562,7 +650,7 @@ This analysis is critical because W-D-L is noisy at 20 games.
 Dataset:
 
 - [x] Add `finetune/build_critic_ranker_dataset.py`.
-- [ ] Reuse `StockfishEvaluator` / `StockfishRewardScorer` and `(fen,uci)` cache.
+- [x] Reuse `StockfishEvaluator` / `StockfishRewardScorer` and `(fen,uci)` cache.
 - [x] Pull candidate rows from `attempts.reranker_metadata`.
 - [ ] Add fresh policy candidate sampling mode.
 - [x] Split by FEN, not candidate row.
@@ -573,7 +661,7 @@ Training:
 
 - [ ] Add `finetune/train_critic_ranker.py`.
 - [x] Add `finetune/evaluate_critic_ranker_lora.py`.
-- [ ] Completion-only loss on compact JSON target.
+- [x] Completion-only loss on compact JSON target for position-level choice SFT.
 - [ ] Add tests for prompt/target rendering.
 
 Runtime:
@@ -605,12 +693,18 @@ Benchmarks:
 
 ## 16. Recommended Next Action
 
-Do not start with a full training run. Start with a dataset and offline ranking proof:
+The initial offline ranking proof is positive but not strong enough for arena runtime. The next
+action should improve data quality before writing `learned_critic` runtime code:
 
-1. Build a 20k-30k row critic-ranker smoke dataset from arena DB + policy candidates.
-2. Train a small QLoRA critic for 100-200 steps.
-3. Evaluate whether learned ranking selects lower-CPL candidates than generator order.
-4. Only then wire runtime `learned_critic`.
+1. Mine the 800-step false positives/false negatives from validation predictions.
+2. Add fresh Qwen policy candidate sampling so the dataset contains more realistic Qwen alternatives
+   and fewer purely random legal controls.
+3. Build a 25k-position pilot dataset with the Stockfish evaluation cache.
+4. Train either:
+   - the same Qwen2.5 1.5B choice selector for a faster data-quality check, or
+   - a Qwen3.5 9B LoRA critic/selector if the 25k dataset improves validation balance.
+5. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
+   blunders are materially below the current 95/408.
 
 The most important early signal is not Elo. It is:
 
