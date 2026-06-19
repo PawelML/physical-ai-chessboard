@@ -767,6 +767,91 @@ Interpretation:
   useful, but 1k sampled train positions are not enough and the current target format is probably
   too weak.
 
+### 9.7 Completed Pairwise Contrastive Choice Probe
+
+Added:
+
+```text
+finetune/build_critic_pairwise_dataset.py
+```
+
+This builder converts candidate-level rows into two-candidate contrastive examples. Each example
+contains one safe candidate (`good` or `playable`) and one unsafe candidate (`mistake` or `blunder`)
+with a configurable CPL gap. The target remains strict:
+
+```json
+{"move":"<uci>"}
+```
+
+so the existing LoRA trainer and evaluator can be reused.
+
+Dataset command:
+
+```bash
+python -m finetune.build_critic_pairwise_dataset \
+  --input data/finetune/critic_ranker_large_mixed_plus_policy1k.jsonl \
+  --output data/finetune/critic_pairwise_large_mixed_plus_policy1k.jsonl \
+  --metadata-output data/finetune/critic_pairwise_large_mixed_plus_policy1k.meta.json \
+  --pairs-per-position 4 \
+  --min-cpl-gap 100
+```
+
+Dataset result:
+
+- rows: 15,067 pairwise examples;
+- positions with pairs: 3,999/5,000;
+- split: train 12,009; validation 1,523; test 1,535;
+- pair risks: blunder->good 5,899; blunder->playable 4,781; good->mistake 3,189;
+  mistake->playable 1,198;
+- target prompt index: position 1 = 7,548; position 2 = 7,519.
+
+Training command:
+
+```bash
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 python -m finetune.smoke_train \
+  --dataset data/finetune/critic_pairwise_large_mixed_plus_policy1k.train.jsonl \
+  --output-dir outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_400_lora \
+  --max-steps 400 \
+  --max-seq-length 1024 \
+  --per-device-train-batch-size 2 \
+  --gradient-accumulation-steps 4 \
+  --learning-rate 2e-4
+```
+
+Training result:
+
+- base model: `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`;
+- steps: 400;
+- epoch fraction: 0.2664;
+- train loss: 0.06552.
+
+Full validation result on 1,523 held-out pairwise examples:
+
+| Metric | Value |
+| --- | ---: |
+| Parse rate | 100.0% |
+| Legal rate | 100.0% |
+| Candidate-list rate | 100.0% |
+| Top-1 target match | 971/1,523 (63.76%) |
+| First-prompt baseline top-1 | 770/1,523 (50.56%) |
+| Selected mean CPL | 164.20 |
+| First-prompt candidate mean CPL | 239.45 |
+| Target/oracle mean CPL | 39.27 |
+| Selected high-risk moves | 553/1,523 |
+| First-prompt high-risk moves | 752/1,523 |
+| Selected blunders | 386/1,523 |
+| First-prompt blunders | 538/1,523 |
+
+Interpretation:
+
+- Pairwise contrastive training gives a much clearer offline signal than the previous list-ranking
+  target.
+- The model beats balanced prompt-order baseline by about 13.2 percentage points.
+- It also reduces mean CPL by about 75 and selected blunders by 152 on the validation pairs.
+- This is still not runtime-ready: selected mean CPL 164 and 386/1,523 blunders are too high.
+- The next experiment should keep the pairwise target, scale realistic Qwen candidate pairs, and
+  either train longer or use pairwise scoring as an intermediate signal for a list selector.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
@@ -936,6 +1021,7 @@ Dataset:
 - [x] Split by FEN, not candidate row.
 - [x] Emit JSONL plus metadata summary.
 - [x] Add position-level `finetune/build_critic_choice_dataset.py`.
+- [x] Add pairwise contrastive `finetune/build_critic_pairwise_dataset.py`.
 
 Training:
 
@@ -974,20 +1060,24 @@ Benchmarks:
 ## 16. Recommended Next Action
 
 The initial offline ranking proof is positive but not strong enough for arena runtime. The 1k fresh
-policy-candidate probe improved the hard-case regression numbers, but it also regressed the normal
-validation set, so the next action should still be data/model-quality work rather than runtime code:
+policy-candidate probe improved the hard-case regression numbers, but regressed the normal
+validation set. The pairwise contrastive probe is more promising: it beats balanced prompt-order
+baseline by about 13.2 percentage points and cuts validation-pair blunders from 538 to 386.
+
+The next action should still be data/model-quality work rather than runtime code:
 
 1. Scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the Stockfish cache.
-2. Oversample only positions with at least one safe Qwen candidate and at least one unsafe Qwen
-   candidate; single-candidate positions add little ranking signal.
-3. Keep the existing validation and hard-case regression sets frozen.
-4. Add a contrastive/pairwise target variant where the model sees two moves and must choose the
-   safer one, because the current `{"move":"<uci>"}` target may be too weak for tactical
-   discrimination.
-5. Train the small Qwen2.5 1.5B selector first for a cheap data-quality check, then consider a
-   Qwen3.5 9B LoRA critic/selector only if validation and hard-case gates both improve.
-6. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
-   blunders are materially below the current 95/408 validation baseline.
+2. Build pairwise examples only from positions with at least one safe Qwen candidate and at least
+   one unsafe Qwen candidate; single-candidate positions add little ranking signal.
+3. Keep the existing validation and hard-case regression sets frozen, and add a frozen pairwise
+   validation/test report.
+4. Train the small Qwen2.5 1.5B pairwise selector for 800-1,200 steps as a data-quality check.
+5. If pairwise validation top-1 clears 70% and selected blunders drop materially, test how to
+   compose pairwise preferences into a multi-candidate selector offline.
+6. Consider a Qwen3.5 9B LoRA critic/selector only after the small selector proves the data format
+   scales.
+7. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
+   blunders are materially below the current 95/408 normal choice validation baseline.
 
 The most important early signal is not Elo. It is:
 
@@ -1117,3 +1207,27 @@ training run.
   adapter regresses normal validation and fails the hard-case gate. Do not
   integrate it into runtime; scale targeted fresh policy sampling and test a
   stronger pairwise/contrastive target next.
+
+2026-06-19 pairwise iteration:
+
+- Added `finetune/build_critic_pairwise_dataset.py`.
+- Added `tests/test_build_critic_pairwise_dataset.py`.
+- Built local ignored pairwise dataset:
+  - output: `data/finetune/critic_pairwise_large_mixed_plus_policy1k.jsonl`;
+  - rows: 15,067;
+  - splits: 12,009 train, 1,523 validation, 1,535 test;
+  - target prompt index is balanced: 7,548 at position 1 and 7,519 at
+    position 2.
+- Trained local ignored pairwise Qwen2.5 1.5B adapter:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_400_lora`;
+  - training: 400 steps, 0.2664 epoch, train loss 0.06552.
+- Full pairwise validation result on 1,523 examples:
+  - parse 100.0%, legal 100.0%, candidate-list 100.0%;
+  - top-1 target match 971/1,523 (63.76%);
+  - selected mean CPL 164.20 vs first-prompt 239.45 and oracle 39.27;
+  - selected blunders 386/1,523 vs first-prompt 538/1,523.
+- Conclusion: pairwise contrastive training is a materially better target than
+  list-choice SFT for the small selector. It is not runtime-ready yet, but the
+  next training iteration should scale this pairwise format rather than return
+  to the previous list-only target.
