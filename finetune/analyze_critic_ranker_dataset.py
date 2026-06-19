@@ -151,10 +151,10 @@ def _arena_final(candidates: list[CandidateRow]) -> CandidateRow | None:
 
 def _first_generator_candidate(candidates: list[CandidateRow]) -> CandidateRow | None:
     generator_candidates = [
-        candidate
-        for candidate in candidates
-        if (
-            candidate.source == "arena_candidate"
+            candidate
+            for candidate in candidates
+            if (
+            candidate.source in {"arena_candidate", "policy_sample"}
             and candidate.candidate_rank_in_generator is not None
         )
     ]

@@ -14,17 +14,19 @@ def test_analyze_critic_ranker_dataset_reports_ranking_signal(tmp_path: Path) ->
         _row("fen-a", "d2d4", "arena_candidate", "playable", 80, 80, 1),
         _row("fen-b", "e7e5", "arena_move", "playable", 75, 100, None),
         _row("fen-b", "b8c6", "random_legal", "mistake", 40, 240, None),
+        _row("fen-c", "c2c4", "policy_sample", "blunder", 0, 420, 1),
+        _row("fen-c", "g1f3", "policy_sample", "good", 95, 20, 0),
     ]
     dataset.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
     report = analyze_dataset(dataset)
 
-    assert report["rows"] == 5
-    assert report["positions"] == 2
-    assert report["mixed_safe_unsafe_positions"] == 2
-    assert report["positions_with_qwen_candidates"] == 1
-    assert report["risk_counts"] == {"blunder": 1, "good": 1, "mistake": 1, "playable": 2}
-    assert report["first_generator_candidate"]["risk_counts"] == {"good": 1}
+    assert report["rows"] == 7
+    assert report["positions"] == 3
+    assert report["mixed_safe_unsafe_positions"] == 3
+    assert report["positions_with_qwen_candidates"] == 2
+    assert report["risk_counts"] == {"blunder": 2, "good": 2, "mistake": 1, "playable": 2}
+    assert report["first_generator_candidate"]["risk_counts"] == {"good": 2}
     assert report["oracle_gain_vs_arena_final"] == {
         "positions": 2,
         "mean_score_gain": 50.0,

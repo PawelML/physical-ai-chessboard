@@ -37,6 +37,7 @@ class CriticRankerConfig:
     stockfish_hash_mb: int = 128
     stockfish_threads: int = 1
     evaluation_cache: str | None = None
+    candidate_inputs: list[str] = field(default_factory=list)
     run_ids: list[int] = field(default_factory=list)
     max_positions: int | None = None
     max_candidates_per_position: int = 6
@@ -105,6 +106,7 @@ def main() -> None:
         stockfish_hash_mb=args.stockfish_hash_mb,
         stockfish_threads=args.stockfish_threads,
         evaluation_cache=str(args.evaluation_cache) if args.evaluation_cache else None,
+        candidate_inputs=[str(path) for path in args.candidate_input],
         run_ids=args.run_id,
         max_positions=args.max_positions,
         max_candidates_per_position=args.max_candidates_per_position,
@@ -287,6 +289,8 @@ def _candidate_specs_by_fen(
     if config.include_stockfish_best:
         for spec in _stockfish_best_specs(con, run_ids=config.run_ids):
             _add_spec(grouped=grouped, seen=seen, spec=spec, stats=stats)
+    for spec in _external_candidate_specs(config.candidate_inputs):
+        _add_spec(grouped=grouped, seen=seen, spec=spec, stats=stats)
     if config.random_legal_per_position > 0:
         for spec in _random_legal_specs(
             grouped.keys(),
@@ -451,6 +455,39 @@ def _random_legal_specs(
                 candidate_uci=move.uci(),
                 source="random_legal",
             )
+
+
+def _external_candidate_specs(paths: list[str]) -> Iterable[CandidateSpec]:
+    for path_text in paths:
+        path = Path(path_text)
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    continue
+                fen = payload.get("fen_before") or payload.get("fen")
+                move = (
+                    payload.get("candidate_uci")
+                    or payload.get("uci")
+                    or payload.get("move")
+                )
+                if not isinstance(fen, str) or not isinstance(move, str):
+                    continue
+                yield CandidateSpec(
+                    fen_before=fen,
+                    candidate_uci=move,
+                    source=str(payload.get("source") or "policy_sample"),
+                    candidate_rank_in_generator=_optional_int(
+                        payload.get("candidate_rank_in_generator")
+                    ),
+                    generator_idea=(
+                        str(payload["generator_idea"])
+                        if isinstance(payload.get("generator_idea"), str)
+                        else None
+                    ),
+                )
 
 
 def _build_row(
@@ -630,6 +667,21 @@ def _side_name(color: chess.Color) -> str:
     return "white" if color == chess.WHITE else "black"
 
 
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build candidate-level rows for a learned chess critic/ranker."
@@ -642,6 +694,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stockfish-hash-mb", type=int, default=128)
     parser.add_argument("--stockfish-threads", type=int, default=1)
     parser.add_argument("--evaluation-cache", type=Path)
+    parser.add_argument("--candidate-input", type=Path, action="append", default=[])
     parser.add_argument("--run-id", type=int, action="append", default=[])
     parser.add_argument("--max-positions", type=int)
     parser.add_argument("--max-candidates-per-position", type=int, default=6)

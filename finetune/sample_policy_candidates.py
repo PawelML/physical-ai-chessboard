@@ -1,0 +1,274 @@
+"""Sample legal candidate moves from a policy model for critic-ranker data."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import chess
+
+from arena_core.deliberation import (
+    _build_candidate_prompt,
+    collect_legal_candidates_from_response,
+)
+from arena_core.llm.base import GenerationOptions, LLMService
+from arena_core.llm.ollama import OllamaLLMService
+from finetune._common import write_metadata_sidecar
+
+
+@dataclass(frozen=True)
+class PolicyCandidateSampleConfig:
+    input: str
+    output: str
+    metadata_output: str | None
+    model: str
+    split: str | None = "train"
+    max_positions: int | None = None
+    samples_per_position: int = 1
+    n_candidates: int = 5
+    temperature: float = 0.7
+    num_predict: int = 1024
+    include_ascii_board: bool = True
+    include_legal_moves: bool = True
+    ollama_base_url: str = "http://localhost:11434"
+    timeout_seconds: float = 120.0
+    num_ctx: int | None = None
+    num_gpu: int | None = None
+    progress_every: int | None = None
+
+
+@dataclass
+class PolicyCandidateSampleStats:
+    input_rows: int = 0
+    positions_seen: int = 0
+    positions_sampled: int = 0
+    requests: int = 0
+    rows_written: int = 0
+    legal_candidates_seen: int = 0
+    dropped_duplicate_candidate: int = 0
+    dropped_no_legal_candidates: int = 0
+    service_errors: int = 0
+    by_candidate_count: Counter[int] = field(default_factory=Counter)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "input_rows": self.input_rows,
+            "positions_seen": self.positions_seen,
+            "positions_sampled": self.positions_sampled,
+            "requests": self.requests,
+            "rows_written": self.rows_written,
+            "legal_candidates_seen": self.legal_candidates_seen,
+            "dropped_duplicate_candidate": self.dropped_duplicate_candidate,
+            "dropped_no_legal_candidates": self.dropped_no_legal_candidates,
+            "service_errors": self.service_errors,
+            "by_candidate_count": dict(sorted(self.by_candidate_count.items())),
+        }
+
+
+async def sample_policy_candidates(
+    config: PolicyCandidateSampleConfig,
+    *,
+    service: LLMService,
+) -> PolicyCandidateSampleStats:
+    stats = PolicyCandidateSampleStats()
+    positions = _read_positions(
+        Path(config.input),
+        split=config.split,
+        max_positions=config.max_positions,
+        stats=stats,
+    )
+    stats.positions_seen = len(positions)
+    output_path = Path(config.output)
+    output_rows: list[dict[str, Any]] = []
+    for fen in positions:
+        board = chess.Board(fen)
+        seen_moves: set[str] = set()
+        wrote_for_position = 0
+        for sample_index in range(config.samples_per_position):
+            stats.requests += 1
+            prompt = _build_candidate_prompt(
+                board=board,
+                n_candidates=config.n_candidates,
+                include_ascii_board=config.include_ascii_board,
+                include_legal_moves=config.include_legal_moves,
+            )
+            try:
+                response = await service.complete(
+                    model=config.model,
+                    prompt=prompt,
+                    options=GenerationOptions(
+                        temperature=config.temperature,
+                        num_predict=config.num_predict,
+                    ),
+                )
+            except Exception:
+                stats.service_errors += 1
+                continue
+            candidates = collect_legal_candidates_from_response(board, response.content)
+            stats.by_candidate_count[len(candidates)] += 1
+            if not candidates:
+                stats.dropped_no_legal_candidates += 1
+                continue
+            for candidate in candidates:
+                stats.legal_candidates_seen += 1
+                if candidate.uci in seen_moves:
+                    stats.dropped_duplicate_candidate += 1
+                    continue
+                seen_moves.add(candidate.uci)
+                output_rows.append(
+                    _candidate_row(
+                        board=board,
+                        candidate=candidate,
+                        model=config.model,
+                        sample_index=sample_index,
+                        raw_response=response.content,
+                    )
+                )
+                stats.rows_written += 1
+                wrote_for_position += 1
+        if wrote_for_position > 0:
+            stats.positions_sampled += 1
+        if (
+            config.progress_every is not None
+            and config.progress_every > 0
+            and stats.requests % config.progress_every == 0
+        ):
+            print(
+                "sampled "
+                f"{stats.requests} requests, {stats.rows_written} candidate rows, "
+                f"{stats.service_errors} service errors",
+                flush=True,
+            )
+    await asyncio.to_thread(_write_jsonl, output_path, output_rows)
+    return stats
+
+
+def _candidate_row(
+    *,
+    board: chess.Board,
+    candidate: Any,
+    model: str,
+    sample_index: int,
+    raw_response: str,
+) -> dict[str, Any]:
+    return {
+        "fen_before": board.fen(),
+        "side_to_move": "white" if board.turn == chess.WHITE else "black",
+        "candidate_uci": candidate.uci,
+        "candidate_san": candidate.san,
+        "source": "policy_sample",
+        "candidate_rank_in_generator": candidate.first_index,
+        "generator_idea": candidate.idea,
+        "policy_model": model,
+        "sample_index": sample_index,
+        "candidate_raw": candidate.raw,
+        "raw_response": raw_response,
+    }
+
+
+def _read_positions(
+    path: Path,
+    *,
+    split: str | None,
+    max_positions: int | None,
+    stats: PolicyCandidateSampleStats,
+) -> list[str]:
+    positions: list[str] = []
+    seen: set[str] = set()
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if max_positions is not None and len(positions) >= max_positions:
+                break
+            if not line.strip():
+                continue
+            stats.input_rows += 1
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                continue
+            if split is not None and payload.get("split") != split:
+                continue
+            fen = payload.get("fen_before") or payload.get("fen")
+            if not isinstance(fen, str) or fen in seen:
+                continue
+            chess.Board(fen)
+            seen.add(fen)
+            positions.append(fen)
+    return positions
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as output_file:
+        for row in rows:
+            output_file.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+async def _amain() -> None:
+    args = _parse_args()
+    config = PolicyCandidateSampleConfig(
+        input=str(args.input),
+        output=str(args.output),
+        metadata_output=str(args.metadata_output) if args.metadata_output else None,
+        model=args.model,
+        split=args.split,
+        max_positions=args.max_positions,
+        samples_per_position=args.samples_per_position,
+        n_candidates=args.n_candidates,
+        temperature=args.temperature,
+        num_predict=args.num_predict,
+        include_ascii_board=not args.no_ascii_board,
+        include_legal_moves=not args.no_legal_moves,
+        ollama_base_url=args.ollama_base_url,
+        timeout_seconds=args.timeout_seconds,
+        num_ctx=args.num_ctx,
+        num_gpu=args.num_gpu,
+        progress_every=args.progress_every,
+    )
+    service = OllamaLLMService(
+        base_url=config.ollama_base_url,
+        timeout_seconds=config.timeout_seconds,
+        temperature=config.temperature,
+        num_ctx=config.num_ctx,
+        num_predict=config.num_predict,
+        num_gpu=config.num_gpu,
+        think="off",
+    )
+    stats = await sample_policy_candidates(config, service=service)
+    if config.metadata_output is not None:
+        write_metadata_sidecar(Path(config.metadata_output), config=config, stats=stats)
+    print(f"Wrote {stats.rows_written} policy candidate rows to {config.output}.")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Sample policy candidate moves from Ollama.")
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--metadata-output", type=Path)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--split", default="train")
+    parser.add_argument("--max-positions", type=int)
+    parser.add_argument("--samples-per-position", type=int, default=1)
+    parser.add_argument("--n-candidates", type=int, default=5)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--num-predict", type=int, default=1024)
+    parser.add_argument("--no-ascii-board", action="store_true")
+    parser.add_argument("--no-legal-moves", action="store_true")
+    parser.add_argument("--ollama-base-url", default="http://localhost:11434")
+    parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--num-ctx", type=int)
+    parser.add_argument("--num-gpu", type=int)
+    parser.add_argument("--progress-every", type=int)
+    return parser.parse_args()
+
+
+def main() -> None:
+    asyncio.run(_amain())
+
+
+if __name__ == "__main__":
+    main()

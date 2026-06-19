@@ -120,6 +120,57 @@ def test_cached_move_evaluator_reuses_persisted_evaluations(tmp_path: Path) -> N
     assert second.cache_hits == 1
 
 
+def test_build_critic_ranker_dataset_reads_external_candidate_input(tmp_path: Path) -> None:
+    db_path = tmp_path / "arena.db"
+    output_path = tmp_path / "critic.jsonl"
+    candidate_input = tmp_path / "policy_candidates.jsonl"
+    _write_minimal_arena_db(db_path)
+    candidate_input.write_text(
+        json.dumps(
+            {
+                "fen_before": START_FEN,
+                "candidate_uci": "b1c3",
+                "source": "policy_sample",
+                "candidate_rank_in_generator": 2,
+                "generator_idea": "develop queen knight",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evaluator = FakeEvaluator(
+        {
+            "e2e4": _evaluation(move="e2e4", cpl=120, classification="inaccuracy"),
+            "g1f3": _evaluation(move="g1f3", cpl=0, classification="best"),
+            "b1c3": _evaluation(move="b1c3", cpl=40, classification="good"),
+        }
+    )
+
+    stats = build_critic_ranker_dataset(
+        CriticRankerConfig(
+            db=str(db_path),
+            output=str(output_path),
+            metadata_output=None,
+            stockfish_path="/unused",
+            candidate_inputs=[str(candidate_input)],
+            run_ids=[7],
+            max_candidates_per_position=6,
+            random_legal_per_position=0,
+            include_stockfish_best=False,
+        ),
+        evaluator=evaluator,
+    )
+
+    rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    by_move = {row["candidate_uci"]: row for row in rows}
+
+    assert stats.rows_written == 3
+    assert by_move["b1c3"]["source"] == "policy_sample"
+    assert by_move["b1c3"]["risk"] == "good"
+    assert by_move["b1c3"]["candidate_rank_in_generator"] == 2
+    assert by_move["b1c3"]["generator_idea"] == "develop queen knight"
+
+
 class FakeEvaluator:
     def __init__(self, evaluations: dict[str, EngineEvaluation]) -> None:
         self.evaluations = evaluations

@@ -598,6 +598,89 @@ Minimum next-adapter hard-case target:
 - selected blunders below 100/300;
 - no parse/legal regression.
 
+### 9.5 Completed Fresh Qwen Policy Candidate Sampling Smoke
+
+Added:
+
+```text
+finetune/sample_policy_candidates.py
+```
+
+and extended:
+
+```text
+finetune/build_critic_ranker_dataset.py --candidate-input <jsonl>
+```
+
+This allows fresh Qwen-generated candidate lists to be sampled offline, then labeled through the
+same Stockfish/cache pipeline as arena and random candidates.
+
+Smoke sample command:
+
+```bash
+python -m finetune.sample_policy_candidates \
+  --input data/finetune/critic_choice_large_mixed_5k.train.jsonl \
+  --output data/finetune/policy_candidates_qwen35_grpo_train100.jsonl \
+  --metadata-output data/finetune/policy_candidates_qwen35_grpo_train100.meta.json \
+  --model chess-ft-qwen35-9b-pilot-grpo-q8_0:latest \
+  --split train \
+  --max-positions 100 \
+  --samples-per-position 1 \
+  --n-candidates 5 \
+  --temperature 0.7 \
+  --num-predict 512 \
+  --timeout-seconds 180
+```
+
+Sampling result:
+
+- positions sampled: 100/100;
+- requests: 100;
+- service errors: 0;
+- legal candidate rows: 312;
+- mean candidates/request: 3.12;
+- candidate count distribution: 1:36, 2:9, 3:6, 4:5, 5:44.
+
+Label command:
+
+```bash
+python -m finetune.build_critic_ranker_dataset \
+  --db arena.db \
+  --output data/finetune/critic_ranker_policy_qwen35_grpo_train100.jsonl \
+  --metadata-output data/finetune/critic_ranker_policy_qwen35_grpo_train100.meta.json \
+  --stockfish-path vendor/stockfish/root/usr/games/stockfish \
+  --stockfish-nodes 25000 \
+  --stockfish-threads 4 \
+  --evaluation-cache data/finetune/critic_ranker_large_mixed_5k.eval_cache.jsonl \
+  --run-id -1 \
+  --candidate-input data/finetune/policy_candidates_qwen35_grpo_train100.jsonl \
+  --max-positions 100 \
+  --max-candidates-per-position 8 \
+  --random-legal-per-position 0 \
+  --no-stockfish-best \
+  --shuffle-positions \
+  --seed 11
+```
+
+Labeled policy-sample result:
+
+- rows: 312;
+- positions: 100;
+- risk counts: blunder 100, mistake 59, playable 105, good 48;
+- mixed safe/unsafe positions: 41;
+- first Qwen candidate mean CPL: 205.17;
+- oracle within Qwen candidate list mean CPL: 136.62;
+- oracle gain vs first Qwen candidate: 66.95 CPL over 100 positions;
+- first Qwen candidate was a blunder while candidate-list oracle was safe: 8 positions.
+
+Interpretation:
+
+- Fresh policy sampling works and produces legal candidates without arena games.
+- Qwen's own candidate list often contains a better move than its first candidate, so learned
+  ranking has real room to help.
+- This smoke set is train split only; it can seed the next training dataset without contaminating
+  validation or hard-case regression.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
@@ -763,7 +846,7 @@ Dataset:
 - [x] Add `finetune/build_critic_ranker_dataset.py`.
 - [x] Reuse `StockfishEvaluator` / `StockfishRewardScorer` and `(fen,uci)` cache.
 - [x] Pull candidate rows from `attempts.reranker_metadata`.
-- [ ] Add fresh policy candidate sampling mode.
+- [x] Add fresh policy candidate sampling mode.
 - [x] Split by FEN, not candidate row.
 - [x] Emit JSONL plus metadata summary.
 - [x] Add position-level `finetune/build_critic_choice_dataset.py`.
