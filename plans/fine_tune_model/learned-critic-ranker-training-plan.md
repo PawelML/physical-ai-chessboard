@@ -681,6 +681,92 @@ Interpretation:
 - This smoke set is train split only; it can seed the next training dataset without contaminating
   validation or hard-case regression.
 
+### 9.6 Completed 1k Fresh Policy Candidate Training Probe
+
+Scaled fresh policy sampling from 100 to 1,000 train positions using:
+
+```text
+chess-ft-qwen35-9b-pilot-grpo-q8_0:latest
+```
+
+Sampling result:
+
+- requests: 1,000;
+- positions with at least one legal candidate: 996;
+- service errors: 0;
+- legal candidate rows: 2,790;
+- candidate count distribution: 0:4, 1:406, 2:90, 3:117, 4:62, 5:321.
+
+Labeled policy-sample result:
+
+- rows: 2,790 from 996 positions;
+- risk counts: blunder 929, mistake 599, playable 850, good 412;
+- first Qwen candidate mean CPL: 247.06;
+- oracle within Qwen candidate list mean CPL: 178.33;
+- oracle gain vs first Qwen candidate: 68.9 CPL over 996 positions;
+- first Qwen candidate was a blunder while candidate-list oracle was safe: 87 positions.
+
+Combined this with the previous large mixed dataset:
+
+```text
+data/finetune/critic_ranker_large_mixed_plus_policy1k.jsonl
+data/finetune/critic_choice_large_mixed_plus_policy1k.jsonl
+```
+
+The combined choice dataset still has 4,007 positions, but candidate lists for train positions are
+enriched with Qwen-generated alternatives:
+
+- train 3,188;
+- validation 408;
+- test 411;
+- target risk: good 3,260; playable 744; mistake 3.
+
+Trained an 800-step Qwen2.5 1.5B choice LoRA:
+
+```text
+outputs/finetune/critic_choice_qwen25_15b_large_mixed_policy1k_800_lora
+```
+
+Normal validation result on the 408-position validation set:
+
+| Metric | Previous 800-step | Policy1k 800-step |
+| --- | ---: | ---: |
+| Parse rate | 100.0% | 100.0% |
+| Legal rate | 100.0% | 99.75% |
+| Top-1 oracle | 156/408 (38.24%) | 154/408 (37.75%) |
+| Selected mean CPL | 159.69 | 170.93 |
+| Oracle mean CPL | 21.65 | 21.65 |
+| Mean CPL regret vs oracle | 139.38 | 150.49 |
+| Selected high-risk moves | 156/408 | 160/408 |
+| Selected blunders | 95/408 | 101/408 |
+| Missed-good cases | 126/408 | 130/408 |
+| High-regret cases | 93/408 | 96/408 |
+
+Hard-case regression result:
+
+| Metric | Previous 800-step | Policy1k 800-step |
+| --- | ---: | ---: |
+| Parse rate | 100.0% | 100.0% |
+| Legal rate | 100.0% | 100.0% |
+| Top-1 oracle | 13/300 (4.33%) | 24/300 (8.0%) |
+| Selected mean CPL | 376.93 | 352.44 |
+| Oracle mean CPL | 14.31 | 14.31 |
+| Mean CPL regret vs oracle | 362.62 | 338.13 |
+| Selected high-risk moves | 267/300 | 254/300 |
+| Selected blunders | 166/300 | 159/300 |
+| Missed-good cases | 255/300 | 243/300 |
+| High-regret cases | 255/300 | 236/300 |
+
+Interpretation:
+
+- Fresh policy candidates helped the hard-case regression set, but only modestly.
+- The same adapter regressed on the normal validation set.
+- The hard-case result is still far below the minimum next-adapter gate of top-1 above 20%,
+  selected mean CPL below 250, and selected blunders below 100/300.
+- Do not wire this adapter into runtime. Treat it as evidence that realistic Qwen candidates are
+  useful, but 1k sampled train positions are not enough and the current target format is probably
+  too weak.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
@@ -887,18 +973,21 @@ Benchmarks:
 
 ## 16. Recommended Next Action
 
-The initial offline ranking proof is positive but not strong enough for arena runtime. The next
-action should improve data quality before writing `learned_critic` runtime code:
+The initial offline ranking proof is positive but not strong enough for arena runtime. The 1k fresh
+policy-candidate probe improved the hard-case regression numbers, but it also regressed the normal
+validation set, so the next action should still be data/model-quality work rather than runtime code:
 
-1. Use the mined 800-step hard cases as regression/mining seeds for the next dataset.
-2. Add fresh Qwen policy candidate sampling so the dataset contains more realistic Qwen alternatives
-   and fewer purely random legal controls.
-3. Build a 25k-position pilot dataset with the Stockfish evaluation cache.
-4. Train either:
-   - the same Qwen2.5 1.5B choice selector for a faster data-quality check, or
-   - a Qwen3.5 9B LoRA critic/selector if the 25k dataset improves validation balance.
-5. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
-   blunders are materially below the current 95/408.
+1. Scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the Stockfish cache.
+2. Oversample only positions with at least one safe Qwen candidate and at least one unsafe Qwen
+   candidate; single-candidate positions add little ranking signal.
+3. Keep the existing validation and hard-case regression sets frozen.
+4. Add a contrastive/pairwise target variant where the model sees two moves and must choose the
+   safer one, because the current `{"move":"<uci>"}` target may be too weak for tactical
+   discrimination.
+5. Train the small Qwen2.5 1.5B selector first for a cheap data-quality check, then consider a
+   Qwen3.5 9B LoRA critic/selector only if validation and hard-case gates both improve.
+6. Only wire runtime `learned_critic` after offline selected mean CPL is near 100 and selected
+   blunders are materially below the current 95/408 validation baseline.
 
 The most important early signal is not Elo. It is:
 
@@ -999,3 +1088,32 @@ Next implementation step: generate substantially more policy candidates, not
 just reuse the small candidate-critic runs. The next dataset should target at
 least 20k-30k candidate rows / several thousand choice positions before another
 training run.
+
+2026-06-19 later:
+
+- Sampled 1,000 fresh train positions with the Qwen3.5 GRPO policy candidate
+  generator:
+  - output: `data/finetune/policy_candidates_qwen35_grpo_train1k.jsonl`;
+  - result: 2,790 legal candidates from 996 positions, with zero service
+    errors.
+- Labeled those candidates through the existing Stockfish/cache pipeline:
+  - output: `data/finetune/critic_ranker_policy_qwen35_grpo_train1k.jsonl`;
+  - risk counts: 929 blunder, 599 mistake, 850 playable, 412 good.
+- Built a combined mixed-plus-policy1k ranker/choice dataset and trained:
+  - adapter:
+    `outputs/finetune/critic_choice_qwen25_15b_large_mixed_policy1k_800_lora`;
+  - training: 800 steps, 2.01 epochs, train loss 0.1502.
+- Normal validation result on 408 frozen validation positions:
+  - parse 100.0%, legal 99.75%;
+  - top-1 oracle 154/408 (37.75%);
+  - selected mean CPL 170.93;
+  - selected blunders 101/408.
+- Hard-case regression result on 300 frozen variants:
+  - parse 100.0%, legal 100.0%;
+  - top-1 oracle 24/300 (8.0%);
+  - selected mean CPL 352.44;
+  - selected blunders 159/300.
+- Conclusion: policy candidates help the hard-case set slightly but this
+  adapter regresses normal validation and fails the hard-case gate. Do not
+  integrate it into runtime; scale targeted fresh policy sampling and test a
+  stronger pairwise/contrastive target next.
