@@ -109,6 +109,39 @@ async def test_sample_policy_candidates_reads_arena_db_positions(tmp_path: Path)
     assert [row["candidate_uci"] for row in rows] == ["e2e4", "g1f3", "g1f3"]
 
 
+async def test_sample_policy_candidates_offsets_unique_positions(tmp_path: Path) -> None:
+    db_path = tmp_path / "arena.db"
+    output_path = tmp_path / "policy_candidates.jsonl"
+    _write_sample_arena_db(db_path)
+    service = FakeLLMService(json.dumps({"candidates": [{"move": "g1f3"}]}))
+
+    stats = await sample_policy_candidates(
+        PolicyCandidateSampleConfig(
+            input=None,
+            arena_db=str(db_path),
+            run_ids=[7],
+            output=str(output_path),
+            metadata_output=None,
+            model="policy-model",
+            split=None,
+            position_offset=1,
+            max_positions=1,
+            samples_per_position=1,
+            n_candidates=5,
+        ),
+        service=service,
+    )
+
+    rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+    assert stats.positions_skipped_by_offset == 1
+    assert stats.positions_seen == 1
+    assert stats.positions_from_arena_db == 1
+    assert stats.requests == 1
+    assert [row["fen_before"] for row in rows] == [WHITE_AFTER_E4_E5_FEN]
+    assert [row["candidate_uci"] for row in rows] == ["g1f3"]
+
+
 def _write_sample_arena_db(path: Path) -> None:
     con = sqlite3.connect(path)
     try:

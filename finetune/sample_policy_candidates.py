@@ -31,6 +31,7 @@ class PolicyCandidateSampleConfig:
     arena_db: str | None = None
     run_ids: list[int] = field(default_factory=list)
     split: str | None = "train"
+    position_offset: int = 0
     max_positions: int | None = None
     samples_per_position: int = 1
     n_candidates: int = 5
@@ -50,6 +51,7 @@ class PolicyCandidateSampleStats:
     input_rows: int = 0
     arena_db_rows: int = 0
     positions_seen: int = 0
+    positions_skipped_by_offset: int = 0
     positions_from_input: int = 0
     positions_from_arena_db: int = 0
     positions_sampled: int = 0
@@ -66,6 +68,7 @@ class PolicyCandidateSampleStats:
             "input_rows": self.input_rows,
             "arena_db_rows": self.arena_db_rows,
             "positions_seen": self.positions_seen,
+            "positions_skipped_by_offset": self.positions_skipped_by_offset,
             "positions_from_input": self.positions_from_input,
             "positions_from_arena_db": self.positions_from_arena_db,
             "positions_sampled": self.positions_sampled,
@@ -189,6 +192,7 @@ def _read_positions(
         _append_jsonl_positions(
             Path(config.input),
             split=config.split,
+            position_offset=config.position_offset,
             max_positions=config.max_positions,
             stats=stats,
             positions=positions,
@@ -198,6 +202,7 @@ def _read_positions(
         _append_arena_db_positions(
             Path(config.arena_db),
             run_ids=config.run_ids,
+            position_offset=config.position_offset,
             max_positions=config.max_positions,
             stats=stats,
             positions=positions,
@@ -210,6 +215,7 @@ def _append_jsonl_positions(
     path: Path,
     *,
     split: str | None,
+    position_offset: int,
     max_positions: int | None,
     stats: PolicyCandidateSampleStats,
     positions: list[str],
@@ -228,18 +234,22 @@ def _append_jsonl_positions(
             if split is not None and payload.get("split") != split:
                 continue
             fen = payload.get("fen_before") or payload.get("fen")
-            if not isinstance(fen, str) or fen in seen:
-                continue
-            chess.Board(fen)
-            seen.add(fen)
-            positions.append(fen)
-            stats.positions_from_input += 1
+            _maybe_append_position(
+                fen,
+                source="input",
+                position_offset=position_offset,
+                max_positions=max_positions,
+                stats=stats,
+                positions=positions,
+                seen=seen,
+            )
 
 
 def _append_arena_db_positions(
     path: Path,
     *,
     run_ids: list[int],
+    position_offset: int,
     max_positions: int | None,
     stats: PolicyCandidateSampleStats,
     positions: list[str],
@@ -262,14 +272,45 @@ def _append_arena_db_positions(
                 break
             stats.arena_db_rows += 1
             fen = row["fen_before"]
-            if not isinstance(fen, str) or fen in seen:
-                continue
-            chess.Board(fen)
-            seen.add(fen)
-            positions.append(fen)
-            stats.positions_from_arena_db += 1
+            _maybe_append_position(
+                fen,
+                source="arena_db",
+                position_offset=position_offset,
+                max_positions=max_positions,
+                stats=stats,
+                positions=positions,
+                seen=seen,
+            )
     finally:
         con.close()
+
+
+def _maybe_append_position(
+    fen: object,
+    *,
+    source: str,
+    position_offset: int,
+    max_positions: int | None,
+    stats: PolicyCandidateSampleStats,
+    positions: list[str],
+    seen: set[str],
+) -> None:
+    if _position_limit_reached(positions, max_positions):
+        return
+    if not isinstance(fen, str) or fen in seen:
+        return
+    chess.Board(fen)
+    seen.add(fen)
+    if stats.positions_skipped_by_offset < position_offset:
+        stats.positions_skipped_by_offset += 1
+        return
+    positions.append(fen)
+    if source == "input":
+        stats.positions_from_input += 1
+    elif source == "arena_db":
+        stats.positions_from_arena_db += 1
+    else:
+        raise ValueError(f"Unknown position source: {source}")
 
 
 def _run_filter(column: str, run_ids: list[int]) -> tuple[str, list[int]]:
@@ -300,6 +341,7 @@ async def _amain() -> None:
         arena_db=str(args.arena_db) if args.arena_db else None,
         run_ids=args.run_id,
         split=args.split,
+        position_offset=args.position_offset,
         max_positions=args.max_positions,
         samples_per_position=args.samples_per_position,
         n_candidates=args.n_candidates,
@@ -337,6 +379,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--arena-db", type=Path)
     parser.add_argument("--run-id", type=int, action="append", default=[])
     parser.add_argument("--split", default="train")
+    parser.add_argument("--position-offset", type=int, default=0)
     parser.add_argument("--max-positions", type=int)
     parser.add_argument("--samples-per-position", type=int, default=1)
     parser.add_argument("--n-candidates", type=int, default=5)
