@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
@@ -10,6 +11,9 @@ from finetune.sample_policy_candidates import (
 )
 
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+WHITE_AFTER_E4_E5_FEN = (
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+)
 
 
 async def test_sample_policy_candidates_writes_legal_unique_rows(tmp_path: Path) -> None:
@@ -58,6 +62,84 @@ async def test_sample_policy_candidates_writes_legal_unique_rows(tmp_path: Path)
     assert rows[0]["generator_idea"] == "claim center"
     assert rows[0]["policy_model"] == "policy-model"
     assert rows[1]["candidate_rank_in_generator"] == 2
+
+
+async def test_sample_policy_candidates_reads_arena_db_positions(tmp_path: Path) -> None:
+    db_path = tmp_path / "arena.db"
+    output_path = tmp_path / "policy_candidates.jsonl"
+    _write_sample_arena_db(db_path)
+    service = FakeLLMService(
+        json.dumps(
+            {
+                "candidates": [
+                    {"move": "e2e4", "idea": "claim center"},
+                    {"move": "g1f3", "idea": "develop"},
+                ]
+            }
+        )
+    )
+
+    stats = await sample_policy_candidates(
+        PolicyCandidateSampleConfig(
+            input=None,
+            arena_db=str(db_path),
+            run_ids=[7],
+            output=str(output_path),
+            metadata_output=None,
+            model="policy-model",
+            split=None,
+            samples_per_position=1,
+            n_candidates=5,
+        ),
+        service=service,
+    )
+
+    rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+    assert stats.arena_db_rows == 3
+    assert stats.positions_seen == 2
+    assert stats.positions_from_arena_db == 2
+    assert stats.requests == 2
+    assert stats.rows_written == 3
+    assert [row["fen_before"] for row in rows] == [
+        START_FEN,
+        START_FEN,
+        WHITE_AFTER_E4_E5_FEN,
+    ]
+    assert [row["candidate_uci"] for row in rows] == ["e2e4", "g1f3", "g1f3"]
+
+
+def _write_sample_arena_db(path: Path) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.executescript(
+            """
+            create table games (
+                id integer primary key,
+                run_id integer not null
+            );
+            create table moves (
+                id integer primary key,
+                game_id integer not null,
+                ply integer not null,
+                fen_before text not null
+            );
+            """
+        )
+        con.execute("insert into games (id, run_id) values (1, 7)")
+        con.execute("insert into games (id, run_id) values (2, 8)")
+        con.executemany(
+            "insert into moves (id, game_id, ply, fen_before) values (?, ?, ?, ?)",
+            [
+                (10, 1, 1, START_FEN),
+                (11, 1, 2, START_FEN),
+                (12, 1, 3, WHITE_AFTER_E4_E5_FEN),
+                (13, 2, 1, START_FEN),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 class FakeLLMService(LLMService):

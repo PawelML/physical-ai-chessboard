@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,10 +24,12 @@ from finetune._common import write_metadata_sidecar
 
 @dataclass(frozen=True)
 class PolicyCandidateSampleConfig:
-    input: str
+    input: str | None
     output: str
     metadata_output: str | None
     model: str
+    arena_db: str | None = None
+    run_ids: list[int] = field(default_factory=list)
     split: str | None = "train"
     max_positions: int | None = None
     samples_per_position: int = 1
@@ -45,7 +48,10 @@ class PolicyCandidateSampleConfig:
 @dataclass
 class PolicyCandidateSampleStats:
     input_rows: int = 0
+    arena_db_rows: int = 0
     positions_seen: int = 0
+    positions_from_input: int = 0
+    positions_from_arena_db: int = 0
     positions_sampled: int = 0
     requests: int = 0
     rows_written: int = 0
@@ -58,7 +64,10 @@ class PolicyCandidateSampleStats:
     def to_json(self) -> dict[str, Any]:
         return {
             "input_rows": self.input_rows,
+            "arena_db_rows": self.arena_db_rows,
             "positions_seen": self.positions_seen,
+            "positions_from_input": self.positions_from_input,
+            "positions_from_arena_db": self.positions_from_arena_db,
             "positions_sampled": self.positions_sampled,
             "requests": self.requests,
             "rows_written": self.rows_written,
@@ -76,12 +85,7 @@ async def sample_policy_candidates(
     service: LLMService,
 ) -> PolicyCandidateSampleStats:
     stats = PolicyCandidateSampleStats()
-    positions = _read_positions(
-        Path(config.input),
-        split=config.split,
-        max_positions=config.max_positions,
-        stats=stats,
-    )
+    positions = _read_positions(config, stats=stats)
     stats.positions_seen = len(positions)
     output_path = Path(config.output)
     output_rows: list[dict[str, Any]] = []
@@ -172,17 +176,48 @@ def _candidate_row(
 
 
 def _read_positions(
+    config: PolicyCandidateSampleConfig,
+    *,
+    stats: PolicyCandidateSampleStats,
+) -> list[str]:
+    if config.input is None and config.arena_db is None:
+        raise ValueError("Either input or arena_db must be configured.")
+
+    positions: list[str] = []
+    seen: set[str] = set()
+    if config.input is not None:
+        _append_jsonl_positions(
+            Path(config.input),
+            split=config.split,
+            max_positions=config.max_positions,
+            stats=stats,
+            positions=positions,
+            seen=seen,
+        )
+    if config.arena_db is not None:
+        _append_arena_db_positions(
+            Path(config.arena_db),
+            run_ids=config.run_ids,
+            max_positions=config.max_positions,
+            stats=stats,
+            positions=positions,
+            seen=seen,
+        )
+    return positions
+
+
+def _append_jsonl_positions(
     path: Path,
     *,
     split: str | None,
     max_positions: int | None,
     stats: PolicyCandidateSampleStats,
-) -> list[str]:
-    positions: list[str] = []
-    seen: set[str] = set()
+    positions: list[str],
+    seen: set[str],
+) -> None:
     with path.open(encoding="utf-8") as handle:
         for line in handle:
-            if max_positions is not None and len(positions) >= max_positions:
+            if _position_limit_reached(positions, max_positions):
                 break
             if not line.strip():
                 continue
@@ -198,7 +233,54 @@ def _read_positions(
             chess.Board(fen)
             seen.add(fen)
             positions.append(fen)
-    return positions
+            stats.positions_from_input += 1
+
+
+def _append_arena_db_positions(
+    path: Path,
+    *,
+    run_ids: list[int],
+    max_positions: int | None,
+    stats: PolicyCandidateSampleStats,
+    positions: list[str],
+    seen: set[str],
+) -> None:
+    where, params = _run_filter("g.run_id", run_ids)
+    sql = f"""
+        select
+            m.fen_before
+        from moves m
+        join games g on g.id = m.game_id
+        {where}
+        order by g.run_id, g.id, m.ply
+    """
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    try:
+        for row in con.execute(sql, params):
+            if _position_limit_reached(positions, max_positions):
+                break
+            stats.arena_db_rows += 1
+            fen = row["fen_before"]
+            if not isinstance(fen, str) or fen in seen:
+                continue
+            chess.Board(fen)
+            seen.add(fen)
+            positions.append(fen)
+            stats.positions_from_arena_db += 1
+    finally:
+        con.close()
+
+
+def _run_filter(column: str, run_ids: list[int]) -> tuple[str, list[int]]:
+    if not run_ids:
+        return "", []
+    placeholders = ", ".join("?" for _ in run_ids)
+    return f"where {column} in ({placeholders})", list(run_ids)
+
+
+def _position_limit_reached(positions: list[str], max_positions: int | None) -> bool:
+    return max_positions is not None and len(positions) >= max_positions
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -211,10 +293,12 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 async def _amain() -> None:
     args = _parse_args()
     config = PolicyCandidateSampleConfig(
-        input=str(args.input),
+        input=str(args.input) if args.input else None,
         output=str(args.output),
         metadata_output=str(args.metadata_output) if args.metadata_output else None,
         model=args.model,
+        arena_db=str(args.arena_db) if args.arena_db else None,
+        run_ids=args.run_id,
         split=args.split,
         max_positions=args.max_positions,
         samples_per_position=args.samples_per_position,
@@ -246,10 +330,12 @@ async def _amain() -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sample policy candidate moves from Ollama.")
-    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--metadata-output", type=Path)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--arena-db", type=Path)
+    parser.add_argument("--run-id", type=int, action="append", default=[])
     parser.add_argument("--split", default="train")
     parser.add_argument("--max-positions", type=int)
     parser.add_argument("--samples-per-position", type=int, default=1)

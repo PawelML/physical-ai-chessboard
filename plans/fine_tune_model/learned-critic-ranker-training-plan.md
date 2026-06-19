@@ -1705,3 +1705,41 @@ training run.
   - The key next data step is to collect thousands of runtime candidate prompts from real
     Qwen-in-arena positions, label those candidates, and train/evaluate on that distribution. The
     existing offline pairwise data was too optimistic for runtime transfer.
+
+2026-06-20 runtime policy sampling path:
+
+- Extended `finetune.sample_policy_candidates` so it can read unique `fen_before` positions
+  directly from an arena SQLite database via `--arena-db`, with optional repeated `--run-id`
+  filters.
+- The sampler still uses the same candidate prompt as runtime deliberation and still writes the
+  existing `policy_sample` candidate-input JSONL format, so it remains compatible with
+  `finetune.build_critic_ranker_dataset --candidate-input`.
+- Smoke command:
+  - input: `arena-pairwise-smoke-5g-n5.db`, run id 1;
+  - model: `qwen3.5:9b`;
+  - max positions: 10;
+  - samples per position: 1;
+  - requested candidates: 5.
+- Smoke sampler result:
+  - 10 requests;
+  - 34 legal unique policy candidate rows;
+  - 0 service errors;
+  - legal candidates per request: min 1, mean 3.4, max 5.
+- Smoke Stockfish-label result:
+  - ranker rows: 55 from 10 positions;
+  - source counts: 27 `policy_sample`, 12 `arena_candidate_pairwise`, 11 `arena_move`,
+    5 `stockfish_good`;
+  - risk counts: 29 good, 19 playable, 3 mistake, 4 blunder.
+- Smoke analysis:
+  - first generator candidate mean CPL: 151.0;
+  - oracle candidate mean CPL: 1.6;
+  - oracle gain vs first generator: 149.4 CPL over 10/10 positions;
+  - mixed safe/unsafe positions: 5/10.
+- Interpretation:
+  - The end-to-end path now exists for collecting runtime-prompt candidate lists without running
+    full pairwise judging games.
+  - The small smoke again shows strong selector-training signal: Qwen often produces a much safer
+    move somewhere in its candidate list, but not necessarily first.
+  - Next scale-up target: sample thousands of positions from `arena.db`/recent benchmark DBs,
+    label them with the ranker builder, then split by FEN and train/evaluate a selector on this
+    runtime candidate distribution.
