@@ -541,6 +541,63 @@ The next dataset iteration should oversample these exact structures:
 - target good move sometimes appears at prompt index 1, sometimes later;
 - include repeated hard-case FENs with shuffled candidate order to reduce position/order shortcuts.
 
+### 9.4 Completed Hard-Case Regression Eval Set
+
+Added `finetune/build_critic_choice_hardcase_eval.py` to turn mined hard cases into a normal
+candidate-choice eval dataset. This is deliberately an eval/regression set, not a training
+augmentation, because the source hard cases came from validation predictions.
+
+Generated local regression set:
+
+```text
+data/finetune/critic_choice_large_mixed_5k_hardcase_eval.jsonl
+```
+
+Builder command:
+
+```bash
+python -m finetune.build_critic_choice_hardcase_eval \
+  --input outputs/finetune/critic_choice_qwen25_15b_large_mixed_2epoch_hard_cases.jsonl \
+  --output data/finetune/critic_choice_large_mixed_5k_hardcase_eval.jsonl \
+  --metadata-output data/finetune/critic_choice_large_mixed_5k_hardcase_eval.meta.json \
+  --variants-per-case 3 \
+  --seed 11
+```
+
+Regression set composition:
+
+- input hard cases: 100;
+- output rows: 300;
+- target risk: good 96 hard cases, playable 4 hard cases;
+- category counts across source hard cases: high_regret 93, missed_good 96, selected_blunder 63.
+
+Current 800-step adapter baseline on this regression set:
+
+| Metric | Value |
+| --- | ---: |
+| Parse rate | 100.0% |
+| Legal rate | 100.0% |
+| Top-1 oracle | 13/300 (4.33%) |
+| Selected mean CPL | 376.93 |
+| Oracle mean CPL | 14.31 |
+| Mean CPL regret vs oracle | 362.62 |
+| Selected high-risk moves | 267/300 |
+| Selected blunders | 166/300 |
+| Missed-good cases | 255/300 |
+
+This is now the regression gate for the next data/model iteration. A candidate adapter is not a
+real improvement unless it improves both:
+
+- the normal validation set (`critic_choice_large_mixed_5k.validation.jsonl`);
+- the hard-case regression set above.
+
+Minimum next-adapter hard-case target:
+
+- top-1 oracle above 20%;
+- selected mean CPL below 250;
+- selected blunders below 100/300;
+- no parse/legal regression.
+
 ## 10. Offline Evaluation Gates
 
 Before arena runtime integration, evaluate held-out candidate rows:
