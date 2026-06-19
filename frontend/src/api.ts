@@ -257,7 +257,12 @@ export type GameJob = {
 
 export type GuidanceMode = "legal_list" | "strategic_memory";
 
-export type InferenceMode = "single_shot" | "native_think" | "revise" | "candidate_critic";
+export type InferenceMode =
+  | "single_shot"
+  | "native_think"
+  | "revise"
+  | "candidate_critic"
+  | "candidate_pairwise";
 
 export type StockfishLevel = "beginner" | "club";
 

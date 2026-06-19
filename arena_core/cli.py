@@ -369,8 +369,16 @@ def _source_from_name(
             raise ValueError("deliberative:<source> requires an LLM model source")
         model, service = llm_service_for(inner_name, settings)
         inner = LLMMoveSource(model=model, service=service)
+        pairwise_critic: LLMMoveSource | None = None
+        if settings.deliberation_pairwise_critic_model:
+            critic_model, critic_service = llm_service_for(
+                settings.deliberation_pairwise_critic_model,
+                settings,
+            )
+            pairwise_critic = LLMMoveSource(model=critic_model, service=critic_service)
         return DeliberativeLLMMoveSource(
             inner=inner,
+            pairwise_critic=pairwise_critic,
             config=_deliberation_config(settings),
         )
     if is_reranked_source_name(name):
@@ -427,12 +435,16 @@ def _source_from_name(
 
 def _deliberation_config(settings: Settings) -> DeliberationConfig:
     mode = settings.deliberation_mode
-    if mode not in {"native_think", "revise", "candidate_critic"}:
+    if mode not in {"native_think", "revise", "candidate_critic", "candidate_pairwise"}:
         raise ValueError(
-            "ARENA_DELIBERATION_MODE must be native_think, revise, or candidate_critic"
+            "ARENA_DELIBERATION_MODE must be native_think, revise, candidate_critic, "
+            "or candidate_pairwise"
         )
     return DeliberationConfig(
-        mode=cast("Literal['native_think', 'revise', 'candidate_critic']", mode),
+        mode=cast(
+            "Literal['native_think', 'revise', 'candidate_critic', 'candidate_pairwise']",
+            mode,
+        ),
         n_candidates=settings.deliberation_n_candidates,
         candidate_temperature=settings.deliberation_candidate_temperature,
         critic_temperature=settings.deliberation_critic_temperature,
@@ -440,6 +452,7 @@ def _deliberation_config(settings: Settings) -> DeliberationConfig:
         max_opponent_replies=settings.deliberation_max_opponent_replies,
         max_analysis_tokens=settings.deliberation_max_analysis_tokens,
         max_final_tokens=settings.deliberation_max_final_tokens,
+        max_pairwise_tokens=settings.deliberation_max_pairwise_tokens,
         persist_intermediate_prompts=settings.deliberation_persist_intermediate_prompts,
     )
 

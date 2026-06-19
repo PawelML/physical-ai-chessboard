@@ -202,3 +202,69 @@ async def test_candidate_critic_uses_single_shot_fallback_when_no_legal_candidat
     assert proposal.metadata["n_distinct_legal_candidates"] == 0
     assert proposal.metadata["no_legal_candidates_fallback_single_shot"] is True
     assert proposal.metadata["fallback_raw_response"] == '{"move":"g1f3"}'
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairwise_mode_selects_by_pairwise_votes() -> None:
+    source = FakeDeliberationSource(
+        [
+            '{"candidates":[{"move":"e2e4"},{"move":"d2d4"},{"move":"g1f3"}]}',
+            '{"move":"d2d4"}',
+            '{"move":"g1f3"}',
+            '{"move":"g1f3"}',
+        ]
+    )
+    deliberative = DeliberativeLLMMoveSource(
+        inner=source,
+        config=DeliberationConfig(mode="candidate_pairwise", persist_intermediate_prompts=False),
+    )
+
+    proposal = await deliberative.propose(prompt="original prompt", board=chess.Board())
+
+    assert proposal.raw_response == '{"move":"g1f3"}'
+    assert proposal.total_tokens == 8
+    assert len(source.prompts) == 4
+    assert proposal.metadata is not None
+    assert proposal.metadata["mode"] == "candidate_pairwise"
+    assert proposal.metadata["pairwise_critic_source"] == "fake-model"
+    assert proposal.metadata["candidate_legal_moves"] == ["e2e4", "d2d4", "g1f3"]
+    assert proposal.metadata["pairwise_vote_counts"] == {
+        "e2e4": 0,
+        "d2d4": 1,
+        "g1f3": 2,
+    }
+    assert proposal.metadata["final_move"] == "g1f3"
+    assert proposal.metadata["changed_move"] is True
+    assert proposal.metadata["pairwise_invalid_count"] == 0
+    assert proposal.metadata["stage_token_usage"] == {
+        "candidate": 2,
+        "pairwise": 6,
+    }
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairwise_uses_cache_for_repeated_position_pairs() -> None:
+    source = FakeDeliberationSource(
+        [
+            '{"candidates":[{"move":"e2e4"},{"move":"d2d4"}]}',
+            '{"move":"d2d4"}',
+            '{"candidates":[{"move":"e2e4"},{"move":"d2d4"}]}',
+        ]
+    )
+    deliberative = DeliberativeLLMMoveSource(
+        inner=source,
+        config=DeliberationConfig(mode="candidate_pairwise", persist_intermediate_prompts=False),
+    )
+
+    first = await deliberative.propose(prompt="original prompt", board=chess.Board())
+    second = await deliberative.propose(prompt="original prompt", board=chess.Board())
+
+    assert first.raw_response == '{"move":"d2d4"}'
+    assert second.raw_response == '{"move":"d2d4"}'
+    assert len(source.prompts) == 3
+    assert second.metadata is not None
+    assert second.metadata["pairwise_cache_hits"] == 1
+    assert second.metadata["stage_token_usage"] == {
+        "candidate": 2,
+        "pairwise": 0,
+    }

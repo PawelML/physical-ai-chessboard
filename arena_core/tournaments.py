@@ -474,7 +474,13 @@ async def _model_metadata_for_sources(
     settings: Settings,
 ) -> dict[str, OllamaModelMetadata]:
     metadata: dict[str, OllamaModelMetadata] = {}
-    for source_name in dict.fromkeys(source_names):
+    source_names_to_fetch = list(dict.fromkeys(source_names))
+    if (
+        any(is_deliberative_source_name(source_name) for source_name in source_names)
+        and settings.deliberation_pairwise_critic_model
+    ):
+        source_names_to_fetch.append(settings.deliberation_pairwise_critic_model)
+    for source_name in dict.fromkeys(source_names_to_fetch):
         source_identity = _base_source_identity(source_name)
         provider_model = parse_provider_model(source_identity)
         if provider_model.provider != "local" or provider_model.model in {"random", "stockfish"}:
@@ -562,6 +568,8 @@ def _deliberation_options(source_names: list[str], settings: Settings) -> dict[s
         "max_opponent_replies": settings.deliberation_max_opponent_replies,
         "max_analysis_tokens": settings.deliberation_max_analysis_tokens,
         "max_final_tokens": settings.deliberation_max_final_tokens,
+        "max_pairwise_tokens": settings.deliberation_max_pairwise_tokens,
+        "pairwise_critic_model": settings.deliberation_pairwise_critic_model,
         "persist_intermediate_prompts": settings.deliberation_persist_intermediate_prompts,
     }
 

@@ -1281,13 +1281,13 @@ regression set it reaches 81/300 top-1, 224.93 selected mean CPL, 89/300 selecte
 The next action should be runtime-enabling engineering plus a very small arena smoke, not a full
 benchmark mode yet:
 
-1. Add a cached/batched pairwise scorer so composed selection can evaluate all pairs for one
-   candidate list without one Python/model call per pair.
-2. Add a hidden/experimental arena move-source mode that generates Qwen candidates, runs the
-   learned pairwise selector, logs every pair decision, and falls back to generator order on any
-   model failure. Keep it separate from existing leaderboard modes.
-3. Run only a tiny 5-game Stockfish smoke first, measuring accepted-move latency, candidate count,
-   changed-move rate, illegal/malformed count, average CPL, and blunders/game.
+1. Export or otherwise expose the 1,200-step pairwise LoRA as a runtime critic model, then configure
+   it with `ARENA_DELIBERATION_PAIRWISE_CRITIC_MODEL`.
+2. Run only a tiny 5-game Stockfish smoke with `candidate_pairwise` first, measuring accepted-move
+   latency, candidate count, changed-move rate, illegal/malformed count, average CPL, and
+   blunders/game.
+3. If latency is too high, add true provider/model batching for pair prompts or reduce the runtime
+   candidate cap before doing larger game tests.
 4. If the tiny smoke is mechanically clean and not slower than an acceptable threshold, run the
    20-game Stockfish comparison against the GRPO single-shot and previous candidate+critic runs.
 5. In parallel, scale fresh Qwen policy sampling to a 10k-25k train-position pilot, reusing the
@@ -1563,3 +1563,37 @@ training run.
   hard-case gate and is the first learned selector worth a small runtime smoke.
   Do not run a full benchmark yet; first add batched/cached scoring and measure
   latency on a tiny arena run.
+
+2026-06-20 experimental runtime pairwise selector:
+
+- Added `candidate_pairwise` as a new deliberative inference mode.
+- Runtime flow:
+  - generate legal candidates with the existing candidate prompt;
+  - compare every unordered candidate pair with the pairwise critic prompt;
+  - select by pairwise vote count;
+  - tie-break by generator order;
+  - fallback to generator order for invalid pairwise responses.
+- Added per-source pair-decision cache keyed by FEN and pair order. This avoids repeated model calls
+  for identical position/pair prompts within a source instance, but it is not true model batching.
+- Added optional separate critic model configuration:
+  - `ARENA_DELIBERATION_PAIRWISE_CRITIC_MODEL=<model>`;
+  - if unset, the same deliberative model handles both candidate generation and pairwise judging.
+- Added persisted metadata for pairwise runtime analysis:
+  - pairwise critic source;
+  - legal candidate list;
+  - pairwise vote counts;
+  - every pair decision;
+  - cache hits;
+  - invalid pairwise decision count;
+  - stage token usage and latency.
+- Added the mode to backend/API and the frontend inference-mode menu as `Candidate + pairwise
+  critic`.
+- Validation:
+  - `pytest -q tests/test_deliberation.py tests/test_tournaments.py`;
+  - `ruff check backend arena_core finetune tests`;
+  - `python -m mypy arena_core/deliberation.py arena_core/cli.py arena_core/tournaments.py backend/main.py tests/test_deliberation.py tests/test_tournaments.py`;
+  - `pytest -q`;
+  - `cd frontend && npm run lint && npm run build`.
+- Conclusion: runtime scaffolding is ready for a tiny smoke, but not yet a full benchmark. The next
+  practical blocker is exposing the trained pairwise LoRA as a runtime critic model and measuring
+  latency with real Ollama/adapter inference.

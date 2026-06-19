@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     deliberation_max_opponent_replies: int = Field(default=40, ge=0)
     deliberation_max_analysis_tokens: int = Field(default=1024, gt=0)
     deliberation_max_final_tokens: int = Field(default=64, gt=0)
+    deliberation_max_pairwise_tokens: int = Field(default=24, gt=0)
+    deliberation_pairwise_critic_model: str | None = None
     deliberation_persist_intermediate_prompts: bool = True
 
 

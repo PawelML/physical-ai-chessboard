@@ -46,7 +46,13 @@ from arena_core.utils import close_if_present
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
-InferenceMode = Literal["single_shot", "native_think", "revise", "candidate_critic"]
+InferenceMode = Literal[
+    "single_shot",
+    "native_think",
+    "revise",
+    "candidate_critic",
+    "candidate_pairwise",
+]
 JobKind = Literal["game", "stockfish_match"]
 StockfishLevel = Literal["beginner", "club"]
 HumanColor = Literal["white", "black"]

@@ -301,6 +301,7 @@ export function StartGamePanel({
               <option value="native_think">Native thinking</option>
               <option value="revise">Two-pass revise</option>
               <option value="candidate_critic">Candidate + critic</option>
+              <option value="candidate_pairwise">Candidate + pairwise critic</option>
             </select>
           </label>
           <details className="sampling-panel">
@@ -575,6 +576,9 @@ function inferenceJobOption(job: GameJob) {
   }
   if (job.inference_mode === "candidate_critic") {
     return "candidate critic";
+  }
+  if (job.inference_mode === "candidate_pairwise") {
+    return "pairwise critic";
   }
   return "single-shot";
 }

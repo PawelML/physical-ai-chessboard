@@ -1,7 +1,8 @@
 import json
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import combinations
 from typing import Any, Literal, Protocol
 
 import chess
@@ -30,7 +31,7 @@ class DeliberationCandidateSource(Protocol):
 
 @dataclass(frozen=True)
 class DeliberationConfig:
-    mode: Literal["native_think", "revise", "candidate_critic"] = "revise"
+    mode: Literal["native_think", "revise", "candidate_critic", "candidate_pairwise"] = "revise"
     n_candidates: int = 5
     candidate_temperature: float = 0.7
     critic_temperature: float = 0.0
@@ -40,6 +41,7 @@ class DeliberationConfig:
     include_legal_moves: bool = True
     max_analysis_tokens: int = 1024
     max_final_tokens: int = 64
+    max_pairwise_tokens: int = 24
     persist_intermediate_prompts: bool = True
 
 
@@ -53,6 +55,45 @@ class DeliberationCandidate:
     first_index: int
 
 
+@dataclass(frozen=True)
+class PairwiseDecision:
+    left_uci: str
+    right_uci: str
+    selected_uci: str
+    parsed_move: str | None
+    parse_ok: bool
+    candidate_ok: bool
+    raw_response: str
+    cache_hit: bool
+    latency_ms: float
+    fallback_reason: str | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "left": self.left_uci,
+            "right": self.right_uci,
+            "selected": self.selected_uci,
+            "parsed_move": self.parsed_move,
+            "parse_ok": self.parse_ok,
+            "candidate_ok": self.candidate_ok,
+            "raw_response": self.raw_response,
+            "cache_hit": self.cache_hit,
+            "latency_ms": self.latency_ms,
+            "fallback_reason": self.fallback_reason,
+        }
+
+
+@dataclass(frozen=True)
+class PairwiseSelectionResult:
+    selected: DeliberationCandidate
+    vote_counts: dict[str, int]
+    decisions: list[PairwiseDecision]
+    prompts: list[str]
+    proposals: list[MoveProposal]
+    cache_hits: int
+    invalid_count: int
+
+
 class DeliberativeLLMMoveSource:
     source_type = "llm_deliberative"
 
@@ -60,11 +101,14 @@ class DeliberativeLLMMoveSource:
         self,
         *,
         inner: DeliberationCandidateSource,
+        pairwise_critic: DeliberationCandidateSource | None = None,
         config: DeliberationConfig | None = None,
     ) -> None:
         self.inner = inner
+        self.pairwise_critic = pairwise_critic
         self.config = config or DeliberationConfig()
         self.name = f"{DELIBERATIVE_SOURCE_PREFIX}{inner.name}"
+        self._pairwise_cache: dict[tuple[str, str, str], PairwiseDecision] = {}
 
     async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
         if self.config.mode == "native_think":
@@ -79,6 +123,8 @@ class DeliberativeLLMMoveSource:
             )
         if self.config.mode == "candidate_critic":
             return await self._candidate_critic(prompt=prompt, board=board)
+        if self.config.mode == "candidate_pairwise":
+            return await self._candidate_pairwise(prompt=prompt, board=board)
         return await self._revise(prompt=prompt, board=board)
 
     async def _revise(self, *, prompt: str, board: chess.Board) -> MoveProposal:
@@ -299,8 +345,186 @@ class DeliberativeLLMMoveSource:
             metadata=metadata,
         )
 
+    async def _candidate_pairwise(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+        started = time.perf_counter()
+        candidate_prompt = _build_candidate_prompt(
+            board=board,
+            n_candidates=self.config.n_candidates,
+            include_ascii_board=self.config.include_ascii_board,
+            include_legal_moves=self.config.include_legal_moves,
+        )
+        candidate_proposal = await self.inner.propose(
+            prompt=candidate_prompt,
+            board=board.copy(),
+            options=GenerationOptions(
+                temperature=self.config.candidate_temperature,
+                num_predict=self.config.max_analysis_tokens,
+            ),
+        )
+        candidates = collect_legal_candidates_from_response(board, candidate_proposal.raw_response)
+        critic_source = self.pairwise_critic or self.inner
+        metadata: dict[str, Any] = {
+            "regime": "llm_deliberative",
+            "mode": "candidate_pairwise",
+            "inner_source": self.inner.name,
+            "pairwise_critic_source": critic_source.name,
+            "n_candidates_configured": self.config.n_candidates,
+            "candidate_raw_response": candidate_proposal.raw_response,
+            "n_distinct_legal_candidates": len(candidates),
+            "candidate_legal_moves": [candidate.uci for candidate in candidates],
+            "stage_token_usage": {"candidate": _token_total(candidate_proposal)},
+            "stage_latency_ms": {"candidate": candidate_proposal.latency_ms},
+        }
+        if self.config.persist_intermediate_prompts:
+            metadata["candidate_prompt"] = candidate_prompt
+        if not candidates:
+            fallback = await self.inner.propose(
+                prompt=prompt,
+                board=board.copy(),
+                options=GenerationOptions(
+                    temperature=self.config.final_temperature,
+                    num_predict=self.config.max_final_tokens,
+                ),
+            )
+            metadata["final_move"] = None
+            metadata["changed_move"] = False
+            metadata["no_legal_candidates_fallback_single_shot"] = True
+            metadata["fallback_raw_response"] = fallback.raw_response
+            metadata["stage_token_usage"] = {
+                "candidate": _token_total(candidate_proposal),
+                "fallback": _token_total(fallback),
+            }
+            metadata["stage_latency_ms"] = {
+                "candidate": candidate_proposal.latency_ms,
+                "fallback": fallback.latency_ms,
+            }
+            return _aggregate_proposal(
+                raw_response=fallback.raw_response,
+                started=started,
+                proposals=[candidate_proposal, fallback],
+                metadata=metadata,
+            )
+
+        pairwise_result = await self._run_pairwise_selector(
+            board=board,
+            candidates=candidates,
+            critic_source=critic_source,
+        )
+        final_move = pairwise_result.selected.move
+        final_uci = final_move.uci()
+        first_uci = candidates[0].uci
+        metadata.update(
+            {
+                "final_move": final_uci,
+                "changed_move": final_uci != first_uci,
+                "pairwise_vote_counts": pairwise_result.vote_counts,
+                "pairwise_decisions": [
+                    decision.to_metadata() for decision in pairwise_result.decisions
+                ],
+                "pairwise_prompt_count": len(pairwise_result.prompts),
+                "pairwise_cache_hits": pairwise_result.cache_hits,
+                "pairwise_invalid_count": pairwise_result.invalid_count,
+                "selection_method": "pairwise_votes_tiebreak_generator_order",
+                "stage_token_usage": {
+                    "candidate": _token_total(candidate_proposal),
+                    "pairwise": sum(
+                        _token_total(proposal) for proposal in pairwise_result.proposals
+                    ),
+                },
+                "stage_latency_ms": {
+                    "candidate": candidate_proposal.latency_ms,
+                    "pairwise": sum(proposal.latency_ms for proposal in pairwise_result.proposals),
+                },
+            }
+        )
+        if self.config.persist_intermediate_prompts:
+            metadata["pairwise_prompts"] = pairwise_result.prompts
+        raw_response = json.dumps({"move": final_uci}, separators=(",", ":"))
+        return _aggregate_proposal(
+            raw_response=raw_response,
+            started=started,
+            proposals=[candidate_proposal, *pairwise_result.proposals],
+            metadata=metadata,
+        )
+
+    async def _run_pairwise_selector(
+        self,
+        *,
+        board: chess.Board,
+        candidates: Sequence[DeliberationCandidate],
+        critic_source: DeliberationCandidateSource,
+    ) -> "PairwiseSelectionResult":
+        if len(candidates) == 1:
+            return PairwiseSelectionResult(
+                selected=candidates[0],
+                vote_counts={candidates[0].uci: 0},
+                decisions=[],
+                prompts=[],
+                proposals=[],
+                cache_hits=0,
+                invalid_count=0,
+            )
+
+        votes = {candidate.uci: 0 for candidate in candidates}
+        by_uci = {candidate.uci: candidate for candidate in candidates}
+        prompts: list[str] = []
+        proposals: list[MoveProposal] = []
+        decisions: list[PairwiseDecision] = []
+        cache_hits = 0
+        invalid_count = 0
+        for left, right in combinations(candidates, 2):
+            cache_key = (board.fen(), left.uci, right.uci)
+            cached = self._pairwise_cache.get(cache_key)
+            if cached is not None:
+                decision = replace(cached, cache_hit=True, latency_ms=0.0)
+                cache_hits += 1
+            else:
+                pairwise_prompt = _build_pairwise_prompt(
+                    board=board,
+                    candidates=[left, right],
+                )
+                prompts.append(pairwise_prompt)
+                proposal = await critic_source.propose(
+                    prompt=pairwise_prompt,
+                    board=board.copy(),
+                    options=GenerationOptions(
+                        temperature=self.config.critic_temperature,
+                        num_predict=self.config.max_pairwise_tokens,
+                    ),
+                )
+                proposals.append(proposal)
+                decision = _pairwise_decision_from_response(
+                    board=board,
+                    left=left,
+                    right=right,
+                    raw_response=proposal.raw_response,
+                    cache_hit=False,
+                    latency_ms=proposal.latency_ms,
+                )
+                self._pairwise_cache[cache_key] = decision
+            if not decision.candidate_ok:
+                invalid_count += 1
+            votes[decision.selected_uci] += 1
+            decisions.append(decision)
+
+        selected_uci = max(
+            votes,
+            key=lambda uci: (votes[uci], -by_uci[uci].first_index),
+        )
+        return PairwiseSelectionResult(
+            selected=by_uci[selected_uci],
+            vote_counts=votes,
+            decisions=decisions,
+            prompts=prompts,
+            proposals=proposals,
+            cache_hits=cache_hits,
+            invalid_count=invalid_count,
+        )
+
     def close(self) -> None:
         close_if_present(self.inner)
+        if self.pairwise_critic is not None and self.pairwise_critic is not self.inner:
+            close_if_present(self.pairwise_critic)
 
 
 def is_deliberative_source_name(name: str) -> bool:
@@ -473,6 +697,70 @@ def _build_final_prompt(
             "Return strict JSON only:",
             '{"move":"e2e4"}',
         ]
+    )
+
+
+def _build_pairwise_prompt(
+    *,
+    board: chess.Board,
+    candidates: Sequence[DeliberationCandidate],
+) -> str:
+    candidate_lines = [
+        f"{index}. {candidate.uci} ({candidate.san})"
+        for index, candidate in enumerate(candidates, start=1)
+    ]
+    return "\n".join(
+        [
+            "You are a chess move safety comparator.",
+            "",
+            "Position:",
+            f"FEN: {board.fen()}",
+            f"Side to move: {_side_name(board.turn)}",
+            "",
+            "Candidate moves:",
+            *candidate_lines,
+            "",
+            "Choose the safer move from the two candidates.",
+            "Return JSON only:",
+            '{"move":"<uci>"}',
+        ]
+    )
+
+
+def _pairwise_decision_from_response(
+    *,
+    board: chess.Board,
+    left: DeliberationCandidate,
+    right: DeliberationCandidate,
+    raw_response: str,
+    cache_hit: bool,
+    latency_ms: float,
+) -> PairwiseDecision:
+    parsed = parse_uci_json(raw_response)
+    pair_moves = {left.uci, right.uci}
+    selected_uci = left.uci
+    candidate_ok = False
+    fallback_reason: str | None = None
+    if parsed.parse_ok and parsed.move is not None:
+        move = _legal_move_from_text(board, parsed.move)
+        if move is not None and move.uci() in pair_moves:
+            selected_uci = move.uci()
+            candidate_ok = True
+        else:
+            fallback_reason = "parsed_move_not_pair_candidate"
+    else:
+        fallback_reason = parsed.error_type or "parse_failed"
+    return PairwiseDecision(
+        left_uci=left.uci,
+        right_uci=right.uci,
+        selected_uci=selected_uci,
+        parsed_move=parsed.move,
+        parse_ok=parsed.parse_ok,
+        candidate_ok=candidate_ok,
+        raw_response=raw_response,
+        cache_hit=cache_hit,
+        latency_ms=latency_ms,
+        fallback_reason=fallback_reason,
     )
 
 
