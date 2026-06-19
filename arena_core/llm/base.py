@@ -15,7 +15,21 @@ class LLMResponse:
     thinking_used: bool = False
 
 
+@dataclass(frozen=True)
+class GenerationOptions:
+    temperature: float | None = None
+    top_p: float | None = None
+    num_predict: int | None = None
+    think: str | None = None
+
+
 class LLMService(ABC):
     @abstractmethod
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
         """Return a normalized response for one prompt."""

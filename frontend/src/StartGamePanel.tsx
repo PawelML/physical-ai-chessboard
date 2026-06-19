@@ -8,12 +8,14 @@ import {
   type GameDefaults,
   type GameJob,
   type GuidanceMode,
+  type InferenceMode,
   type ModelOption,
   type StartGamePayload,
   type StartHumanGamePayload,
   type StartStockfishMatchPayload,
   type StockfishLevel,
 } from "./api";
+import { stockfishLiveLabel } from "./jobLabels";
 
 export function StartGamePanel({
   modelOptions,
@@ -64,6 +66,7 @@ export function StartGamePanel({
   const [ollamaThinking, setOllamaThinking] = useState(false);
   const [ollamaCpuOffload, setOllamaCpuOffload] = useState(false);
   const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>("legal_list");
+  const [inferenceMode, setInferenceMode] = useState<InferenceMode>("single_shot");
   const [maxPlies, setMaxPlies] = useState("");
   const selectedWhite = white ?? defaultWhite;
   const selectedBlack = black ?? defaultBlack;
@@ -123,6 +126,7 @@ export function StartGamePanel({
             ollama_thinking: ollamaThinking,
             ollama_cpu_offload: ollamaCpuOffload,
             guidance_mode: guidanceMode,
+            inference_mode: inferenceMode,
             max_plies: maxPlies ? Number(maxPlies) : null,
           };
           if (startMode === "stockfish") {
@@ -286,6 +290,19 @@ export function StartGamePanel({
               <option value="strategic_memory">Strategic memory</option>
             </select>
           </label>
+          <label>
+            <span>Inference mode</span>
+            <select
+              value={inferenceMode}
+              disabled={submitting}
+              onChange={(event) => setInferenceMode(event.target.value as InferenceMode)}
+            >
+              <option value="single_shot">Single-shot</option>
+              <option value="native_think">Native thinking</option>
+              <option value="revise">Two-pass revise</option>
+              <option value="candidate_critic">Candidate + critic</option>
+            </select>
+          </label>
           <details className="sampling-panel">
             <summary>Sampling &amp; runtime parameters</summary>
             <p className="muted compact">
@@ -445,7 +462,7 @@ export function StartGamePanel({
                 </span>
                 <strong>
                   {job.kind === "stockfish_match" ? stockfishJobOptions(job) : job.guidance_mode} ·{" "}
-                  {ollamaJobOptions(job)} · {jobLabel(job)}
+                  {inferenceJobOption(job)} · {ollamaJobOptions(job)} · {jobLabel(job)}
                 </strong>
               </div>
               {job.status === "running" && (
@@ -532,12 +549,6 @@ function jobLabel(job: GameJob) {
   return job.game_id ? `Game ${job.game_id}` : "completed";
 }
 
-export function stockfishLiveLabel(job: GameJob) {
-  const requested = job.games_requested ?? 1;
-  const current = Math.min(job.games_completed + 1, requested);
-  return `Game ${current}/${requested}`;
-}
-
 function stockfishJobOptions(job: GameJob) {
   const level = job.stockfish_level ?? "stockfish";
   const games = job.games_requested ? `${job.games_requested} games` : "match";
@@ -553,4 +564,17 @@ function ollamaJobOptions(job: GameJob) {
     options.push("mixed offload");
   }
   return options.join(" + ");
+}
+
+function inferenceJobOption(job: GameJob) {
+  if (job.inference_mode === "native_think") {
+    return "native thinking";
+  }
+  if (job.inference_mode === "revise") {
+    return "revise";
+  }
+  if (job.inference_mode === "candidate_critic") {
+    return "candidate critic";
+  }
+  return "single-shot";
 }

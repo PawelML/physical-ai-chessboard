@@ -2,13 +2,19 @@ import asyncio
 import random
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from sqlalchemy import select
 
 from arena_core.annotations import annotate_game
 from arena_core.config import Settings, get_settings
+from arena_core.deliberation import (
+    DeliberationConfig,
+    DeliberativeLLMMoveSource,
+    deliberative_inner_source_name,
+    is_deliberative_source_name,
+)
 from arena_core.engine import ArenaGame, GameResult, LLMMoveSource, MoveSource, RandomMoveSource
 from arena_core.evaluators.stockfish import StockfishEvaluator, StockfishMoveSource
 from arena_core.leaderboards import rebuild_game_summaries
@@ -357,6 +363,16 @@ def _source_from_name(
     *,
     rng: random.Random | None = None,
 ) -> MoveSource:
+    if is_deliberative_source_name(name):
+        inner_name = deliberative_inner_source_name(name)
+        if inner_name in {"random", "stockfish"}:
+            raise ValueError("deliberative:<source> requires an LLM model source")
+        model, service = llm_service_for(inner_name, settings)
+        inner = LLMMoveSource(model=model, service=service)
+        return DeliberativeLLMMoveSource(
+            inner=inner,
+            config=_deliberation_config(settings),
+        )
     if is_reranked_source_name(name):
         inner_name = inner_source_name(name)
         if inner_name in {"random", "stockfish"}:
@@ -407,6 +423,25 @@ def _source_from_name(
         )
     model, service = llm_service_for(name, settings)
     return LLMMoveSource(model=model, service=service)
+
+
+def _deliberation_config(settings: Settings) -> DeliberationConfig:
+    mode = settings.deliberation_mode
+    if mode not in {"native_think", "revise", "candidate_critic"}:
+        raise ValueError(
+            "ARENA_DELIBERATION_MODE must be native_think, revise, or candidate_critic"
+        )
+    return DeliberationConfig(
+        mode=cast("Literal['native_think', 'revise', 'candidate_critic']", mode),
+        n_candidates=settings.deliberation_n_candidates,
+        candidate_temperature=settings.deliberation_candidate_temperature,
+        critic_temperature=settings.deliberation_critic_temperature,
+        final_temperature=settings.deliberation_final_temperature,
+        max_opponent_replies=settings.deliberation_max_opponent_replies,
+        max_analysis_tokens=settings.deliberation_max_analysis_tokens,
+        max_final_tokens=settings.deliberation_max_final_tokens,
+        persist_intermediate_prompts=settings.deliberation_persist_intermediate_prompts,
+    )
 
 
 @app.command("show-db")

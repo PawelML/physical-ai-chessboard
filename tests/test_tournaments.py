@@ -380,6 +380,83 @@ async def test_tournament_captures_ollama_model_snapshot_metadata(
 
 
 @pytest.mark.integration
+async def test_tournament_records_deliberative_regime_in_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
+    await init_db(db_url)
+    session_factory = create_session_factory(db_url)
+
+    async def fake_metadata(
+        *,
+        model: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> object:
+        from arena_core.llm.ollama import OllamaModelMetadata
+
+        return OllamaModelMetadata(
+            name=model,
+            digest=f"digest-{model}",
+            family="qwen35",
+            parameter_size="9.7B",
+            quantization="Q8_0",
+            context_window=262144,
+            runtime_version="0.17.7",
+            modified_at="2026-06-19T12:00:00+02:00",
+            size_bytes=6594474711,
+        )
+
+    monkeypatch.setattr("arena_core.tournaments.fetch_ollama_model_metadata", fake_metadata)
+
+    async with session_factory() as session:
+        async with session.begin():
+            result = await run_tournament(
+                session=session,
+                config=TournamentConfig(
+                    name="deliberative-snapshots",
+                    competitor_a="deliberative:qwen3.5:9b",
+                    competitor_b="random",
+                    max_plies=0,
+                ),
+                settings=Settings(
+                    max_retries=0,
+                    deliberation_mode="candidate_critic",
+                    deliberation_n_candidates=5,
+                ),
+                source_factory=lambda _name, _rng: RandomMoveSource(),
+            )
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(RunParticipant, ModelSnapshot, Model)
+                .join(ModelSnapshot, RunParticipant.model_snapshot_id == ModelSnapshot.id)
+                .join(Model, ModelSnapshot.model_id == Model.id)
+                .where(RunParticipant.run_id == result.run_id)
+            )
+        ).one()
+
+    participant, snapshot, model = row
+    assert participant.display_name == "deliberative:qwen3.5:9b"
+    assert model.name == "qwen3.5:9b"
+    assert snapshot.sampler_params is not None
+    assert snapshot.sampler_params["deliberation"] == {
+        "regime": "llm_deliberative",
+        "mode": "candidate_critic",
+        "n_candidates": 5,
+        "candidate_temperature": 0.7,
+        "critic_temperature": 0.0,
+        "final_temperature": 0.0,
+        "max_opponent_replies": 40,
+        "max_analysis_tokens": 1024,
+        "max_final_tokens": 64,
+        "persist_intermediate_prompts": True,
+    }
+
+
+@pytest.mark.integration
 async def test_rebuild_game_summaries_materializes_leaderboard_rows(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path}/arena.db"
     await init_db(db_url)

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from arena_core.annotations import annotate_game
 from arena_core.config import Settings
 from arena_core.engine import ArenaGame, RandomMoveSource, StaticMoveSource
-from arena_core.llm.base import LLMResponse, LLMService
+from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.persistence.models import MoveAnnotation
 from arena_core.reports import export_game_report
@@ -16,7 +16,14 @@ class StubLLMService(LLMService):
     def __init__(self, content: str) -> None:
         self.content = content
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
+        del model, prompt, options
         return LLMResponse(content=self.content)
 
 

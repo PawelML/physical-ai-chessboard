@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from arena_core.llm.base import LLMResponse, LLMService
+from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
 
 
 class OllamaServiceError(RuntimeError):
@@ -48,33 +48,49 @@ class OllamaLLMService(LLMService):
         self._think = think
         self._working_num_gpu = num_gpu
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
-        options: dict[str, float | int] = {"temperature": self._temperature}
-        if self._top_p is not None:
-            options["top_p"] = self._top_p
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
+        if options and options.temperature is not None:
+            temperature = options.temperature
+        else:
+            temperature = self._temperature
+        request_options: dict[str, float | int] = {"temperature": temperature}
+        top_p = options.top_p if options and options.top_p is not None else self._top_p
+        num_predict = (
+            options.num_predict
+            if options and options.num_predict is not None
+            else self._num_predict
+        )
+        if top_p is not None:
+            request_options["top_p"] = top_p
         if self._num_ctx is not None:
-            options["num_ctx"] = self._num_ctx
-        if self._num_predict is not None:
-            options["num_predict"] = self._num_predict
+            request_options["num_ctx"] = self._num_ctx
+        if num_predict is not None:
+            request_options["num_predict"] = num_predict
         if self._num_gpu is not None:
-            options["num_gpu"] = self._num_gpu
+            request_options["num_gpu"] = self._num_gpu
 
         request_payload = {
             "model": model,
             "prompt": prompt,
             "stream": False,
             "format": "json",
-            "think": self._should_think(model),
-            "options": options,
+            "think": self._should_think(model, options=options),
+            "options": request_options,
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = None
                 for candidate_num_gpu in self._num_gpu_candidates():
                     if candidate_num_gpu is None:
-                        options.pop("num_gpu", None)
+                        request_options.pop("num_gpu", None)
                     else:
-                        options["num_gpu"] = candidate_num_gpu
+                        request_options["num_gpu"] = candidate_num_gpu
                     response = await self._post_generate(client, request_payload)
                     if _is_gpu_memory_error_response(response) and candidate_num_gpu not in {
                         None,
@@ -137,10 +153,11 @@ class OllamaLLMService(LLMService):
             candidates.append(0)
         return candidates
 
-    def _should_think(self, model: str) -> bool:
-        if self._think == "on":
+    def _should_think(self, model: str, *, options: GenerationOptions | None = None) -> bool:
+        think = options.think if options and options.think is not None else self._think
+        if think == "on":
             return True
-        if self._think == "auto":
+        if think == "auto":
             return "qwen" in model.lower()
         return False
 

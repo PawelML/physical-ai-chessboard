@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from arena_core.config import Settings
+from arena_core.llm.base import GenerationOptions
 from arena_core.llm.ollama import OllamaLLMService, _ollama_error_message
 from arena_core.llm.providers import (
     GeminiLLMService,
@@ -83,6 +84,54 @@ async def test_ollama_retries_without_thinking_when_model_rejects_it(
 
     assert response.content == '{"move":"e7e5"}'
     assert [call["think"] for call in calls] == [True, False]
+
+
+async def test_ollama_merges_per_call_generation_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, object]) -> httpx.Response:
+            calls.append(json.copy())
+            return httpx.Response(
+                200,
+                json={"response": '{"move":"e7e5"}', "done": True},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    service = OllamaLLMService(
+        base_url="http://localhost:11434",
+        timeout_seconds=120,
+        temperature=0.0,
+        num_ctx=8192,
+        num_predict=64,
+        think="off",
+    )
+
+    await service.complete(
+        model="qwen3.5-27b-ud:latest",
+        prompt="prompt",
+        options=GenerationOptions(temperature=0.7, num_predict=1024, think="auto"),
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["think"] is True
+    assert calls[0]["options"] == {
+        "temperature": 0.7,
+        "num_ctx": 8192,
+        "num_predict": 1024,
+    }
 
 
 async def test_gemini_retries_timeout_before_success(monkeypatch: pytest.MonkeyPatch) -> None:

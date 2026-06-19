@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from arena_core.llm.base import LLMResponse, LLMService
+from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
 from finetune.evaluate_baseline import evaluate_dataset
 
 
@@ -72,8 +72,14 @@ class FakeLLMService(LLMService):
         self._responses = responses
         self._index = 0
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
-        del model, prompt
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
+        del model, prompt, options
         response = self._responses[self._index]
         self._index += 1
         return LLMResponse(content=response, prompt_tokens=10, completion_tokens=3, total_tokens=13)

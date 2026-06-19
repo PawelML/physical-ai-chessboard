@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     reranker_veto_cpl_threshold: int = Field(default=300, ge=0)
     reranker_veto_nodes: int = Field(default=50_000, gt=0)
     reranker_scorer: str = "stockfish"
+    deliberation_mode: str = "revise"
+    deliberation_n_candidates: int = Field(default=5, ge=1, le=16)
+    deliberation_candidate_temperature: float = Field(default=0.7, ge=0.0)
+    deliberation_critic_temperature: float = Field(default=0.0, ge=0.0)
+    deliberation_final_temperature: float = Field(default=0.0, ge=0.0)
+    deliberation_max_opponent_replies: int = Field(default=40, ge=0)
+    deliberation_max_analysis_tokens: int = Field(default=1024, gt=0)
+    deliberation_max_final_tokens: int = Field(default=64, gt=0)
+    deliberation_persist_intermediate_prompts: bool = True
 
 
 @lru_cache

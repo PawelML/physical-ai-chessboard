@@ -46,6 +46,7 @@ from arena_core.utils import close_if_present
 GameStreamPayload = dict[str, list[dict[str, int | str | None]]]
 GameJobStatus = Literal["running", "completed", "failed", "cancelled"]
 GuidanceMode = Literal["legal_list", "strategic_memory"]
+InferenceMode = Literal["single_shot", "native_think", "revise", "candidate_critic"]
 JobKind = Literal["game", "stockfish_match"]
 StockfishLevel = Literal["beginner", "club"]
 HumanColor = Literal["white", "black"]
@@ -68,6 +69,7 @@ class _CommonGameKnobs(GameDefaults):
     ollama_thinking: bool = False
     ollama_cpu_offload: bool = False
     guidance_mode: GuidanceMode = "legal_list"
+    inference_mode: InferenceMode = "single_shot"
     max_plies: int | None = None
 
     def sampling(self) -> GameDefaults:
@@ -447,6 +449,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="white and black sources are required")
         if payload.max_plies is not None and payload.max_plies <= 0:
             raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+        effective_ollama_thinking = (
+            payload.ollama_thinking or payload.inference_mode == "native_think"
+        )
 
         job_id = uuid.uuid4().hex
         job = GameJob(
@@ -459,9 +464,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             top_p=payload.top_p,
             num_ctx=payload.num_ctx,
             num_predict=payload.num_predict,
-            ollama_thinking=payload.ollama_thinking,
+            ollama_thinking=effective_ollama_thinking,
             ollama_cpu_offload=payload.ollama_cpu_offload,
             guidance_mode=payload.guidance_mode,
+            inference_mode=payload.inference_mode,
             max_plies=payload.max_plies,
             created_at=_utcnow_iso(),
         )
@@ -477,9 +483,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 black=black,
                 legality_mode=payload.legality_mode,
                 sampling=payload.sampling(),
-                ollama_thinking=payload.ollama_thinking,
+                ollama_thinking=effective_ollama_thinking,
                 ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
+                inference_mode=payload.inference_mode,
                 max_plies=payload.max_plies,
                 stockfish_path=payload.stockfish_path,
             )
@@ -493,6 +500,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="model source is required")
         if payload.max_plies is not None and payload.max_plies <= 0:
             raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+        effective_ollama_thinking = (
+            payload.ollama_thinking or payload.inference_mode == "native_think"
+        )
         stockfish_path = _effective_stockfish_path(effective_settings, payload.stockfish_path)
         if stockfish_path is None:
             raise HTTPException(
@@ -513,9 +523,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             top_p=payload.top_p,
             num_ctx=payload.num_ctx,
             num_predict=payload.num_predict,
-            ollama_thinking=payload.ollama_thinking,
+            ollama_thinking=effective_ollama_thinking,
             ollama_cpu_offload=payload.ollama_cpu_offload,
             guidance_mode=payload.guidance_mode,
+            inference_mode=payload.inference_mode,
             max_plies=payload.max_plies,
             stockfish_level=payload.stockfish_level,
             games_requested=payload.game_count,
@@ -534,9 +545,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 game_count=payload.game_count,
                 legality_mode=payload.legality_mode,
                 sampling=payload.sampling(),
-                ollama_thinking=payload.ollama_thinking,
+                ollama_thinking=effective_ollama_thinking,
                 ollama_cpu_offload=payload.ollama_cpu_offload,
                 guidance_mode=payload.guidance_mode,
+                inference_mode=payload.inference_mode,
                 max_plies=payload.max_plies,
                 stockfish_path=stockfish_path,
             )
@@ -550,14 +562,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="opponent source is required")
         if payload.max_plies is not None and payload.max_plies <= 0:
             raise HTTPException(status_code=400, detail="max_plies must be greater than zero")
+        effective_ollama_thinking = (
+            payload.ollama_thinking or payload.inference_mode == "native_think"
+        )
         await create_tables(effective_settings.database_url)
 
         base_settings = _settings_for_ollama_options(
             effective_settings,
             sampling=payload.sampling(),
-            thinking=payload.ollama_thinking,
+            thinking=effective_ollama_thinking,
             cpu_offload=payload.ollama_cpu_offload,
         )
+        base_settings = _settings_for_inference_mode(base_settings, payload.inference_mode)
         stockfish_path = _effective_stockfish_path(effective_settings, payload.stockfish_path)
         game_settings = base_settings
         display_opponent = opponent
@@ -576,7 +592,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         elif stockfish_path is not None:
             game_settings = base_settings.model_copy(update={"stockfish_path": stockfish_path})
 
-        opponent_source = _source_from_name(opponent, game_settings)
+        opponent_source_name = _source_for_inference_mode(opponent, payload.inference_mode)
+        opponent_source = _source_from_name(opponent_source_name, game_settings)
         white: MoveSource
         black: MoveSource
         if payload.human_color == "white":
@@ -1244,6 +1261,7 @@ async def _run_game_job(
     ollama_thinking: bool,
     ollama_cpu_offload: bool,
     guidance_mode: GuidanceMode,
+    inference_mode: InferenceMode,
     max_plies: int | None,
     stockfish_path: str | None,
 ) -> None:
@@ -1251,16 +1269,18 @@ async def _run_game_job(
         def mark_game_started(game_id: int) -> None:
             jobs[job_id] = jobs[job_id].model_copy(update={"game_id": game_id})
 
+        game_settings = _settings_for_ollama_options(
+            settings,
+            sampling=sampling,
+            thinking=ollama_thinking or inference_mode == "native_think",
+            cpu_offload=ollama_cpu_offload,
+        )
+        game_settings = _settings_for_inference_mode(game_settings, inference_mode)
         result, _attempt_log = await _play_async(
-            settings=_settings_for_ollama_options(
-                settings,
-                sampling=sampling,
-                thinking=ollama_thinking,
-                cpu_offload=ollama_cpu_offload,
-            ),
+            settings=game_settings,
             db_url=settings.database_url,
-            white_name=white,
-            black_name=black,
+            white_name=_source_for_inference_mode(white, inference_mode),
+            black_name=_source_for_inference_mode(black, inference_mode),
             legality_mode=legality_mode,
             max_plies=max_plies,
             stockfish_path=stockfish_path,
@@ -1301,6 +1321,7 @@ async def _run_stockfish_match_job(
     ollama_thinking: bool,
     ollama_cpu_offload: bool,
     guidance_mode: GuidanceMode,
+    inference_mode: InferenceMode,
     max_plies: int | None,
     stockfish_path: str,
 ) -> None:
@@ -1310,12 +1331,13 @@ async def _run_stockfish_match_job(
             _settings_for_ollama_options(
                 settings,
                 sampling=sampling,
-                thinking=ollama_thinking,
+                thinking=ollama_thinking or inference_mode == "native_think",
                 cpu_offload=ollama_cpu_offload,
             ),
             level=level,
             stockfish_path=stockfish_path,
         )
+        stockfish_settings = _settings_for_inference_mode(stockfish_settings, inference_mode)
         evaluator = StockfishEvaluator(
             binary_path=stockfish_path,
             nodes=stockfish_settings.stockfish_nodes,
@@ -1352,7 +1374,7 @@ async def _run_stockfish_match_job(
                 session=session,
                 config=TournamentConfig(
                     name=f"{model} vs {_stockfish_display_name(level)}",
-                    competitor_a=model,
+                    competitor_a=_source_for_inference_mode(model, inference_mode),
                     competitor_b="stockfish",
                     legality_mode=legality_mode,
                     max_plies=max_plies,
@@ -1541,6 +1563,20 @@ def _settings_for_ollama_options(
             "ollama_num_gpu": num_gpu,
         }
     )
+
+
+def _settings_for_inference_mode(settings: Settings, inference_mode: InferenceMode) -> Settings:
+    if inference_mode == "single_shot":
+        return settings
+    return settings.model_copy(update={"deliberation_mode": inference_mode})
+
+
+def _source_for_inference_mode(source_name: str, inference_mode: InferenceMode) -> str:
+    if inference_mode == "single_shot":
+        return source_name
+    if source_name in {"random", "stockfish"} or source_name.startswith("deliberative:"):
+        return source_name
+    return f"deliberative:{source_name}"
 
 
 def _size_cpu_bytes(size_bytes: int | None, size_vram_bytes: int | None) -> int | None:

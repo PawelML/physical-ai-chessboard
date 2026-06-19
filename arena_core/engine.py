@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from arena_core.config import Settings
 from arena_core.evaluators.stockfish import EngineEvaluation
-from arena_core.llm.base import LLMService
+from arena_core.llm.base import GenerationOptions, LLMService
 from arena_core.move_sources import MoveProposal
 from arena_core.parser import ParsedMove, parse_uci_json
 from arena_core.persistence import models
@@ -89,9 +89,15 @@ class LLMMoveSource:
         self._model = model
         self._service = service
 
-    async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
+    async def propose(
+        self,
+        *,
+        prompt: str,
+        board: chess.Board,
+        options: GenerationOptions | None = None,
+    ) -> MoveProposal:
         started = time.perf_counter()
-        response = await self._service.complete(model=self._model, prompt=prompt)
+        response = await self._service.complete(model=self._model, prompt=prompt, options=options)
         latency_ms = (time.perf_counter() - started) * 1000
         return MoveProposal(
             raw_response=response.content,

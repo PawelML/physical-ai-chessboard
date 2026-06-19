@@ -11,6 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from arena_core.config import Settings
+from arena_core.deliberation import (
+    deliberative_inner_source_name,
+    is_deliberative_source_name,
+)
 from arena_core.engine import ArenaGame, MoveEvaluator, MoveSource
 from arena_core.llm.ollama import OllamaModelMetadata, fetch_ollama_model_metadata
 from arena_core.llm.providers import parse_provider_model
@@ -212,8 +216,8 @@ async def _record_pair_telemetry(
     if competitor_a in {"random", "stockfish"} or competitor_b in {"random", "stockfish"}:
         return
     footprint = estimate_pair_footprint(
-        competitor_a,
-        competitor_b,
+        _base_source_identity(competitor_a),
+        _base_source_identity(competitor_b),
         budget_gb=settings.ollama_vram_budget_gb,
     )
     payload = {
@@ -383,7 +387,7 @@ async def _create_participant(
     model_metadata: OllamaModelMetadata | None,
 ) -> models.RunParticipant:
     model_snapshot_id = None
-    source_identity = inner_source_name(source_name)
+    source_identity = _base_source_identity(source_name)
     if source_identity == "random":
         opponent_type = "random"
     elif source_identity == "stockfish":
@@ -456,6 +460,10 @@ def _config_payload(
         "prompt_version": settings.prompt_version,
         "stockfish_options": _stockfish_options(settings),
         "reranker_options": _reranker_options([config.competitor_a, config.competitor_b], settings),
+        "deliberation_options": _deliberation_options(
+            [config.competitor_a, config.competitor_b],
+            settings,
+        ),
         "strategic_memory": config.strategic_memory,
     }
 
@@ -467,7 +475,7 @@ async def _model_metadata_for_sources(
 ) -> dict[str, OllamaModelMetadata]:
     metadata: dict[str, OllamaModelMetadata] = {}
     for source_name in dict.fromkeys(source_names):
-        source_identity = inner_source_name(source_name)
+        source_identity = _base_source_identity(source_name)
         provider_model = parse_provider_model(source_identity)
         if provider_model.provider != "local" or provider_model.model in {"random", "stockfish"}:
             continue
@@ -515,6 +523,10 @@ def _ollama_sampler_params(settings: Settings) -> dict[str, object]:
 
 
 def _sampler_params_for_source(source_name: str, settings: Settings) -> dict[str, object]:
+    if is_deliberative_source_name(source_name):
+        params = _ollama_sampler_params(settings)
+        params["deliberation"] = _deliberation_options([source_name], settings)
+        return params
     if not is_reranked_source_name(source_name):
         return _ollama_sampler_params(settings)
     inner_settings = settings.model_copy(
@@ -535,6 +547,31 @@ def _reranker_options(source_names: list[str], settings: Settings) -> dict[str, 
         "veto_cpl_threshold": settings.reranker_veto_cpl_threshold,
         "veto_nodes": settings.reranker_veto_nodes,
     }
+
+
+def _deliberation_options(source_names: list[str], settings: Settings) -> dict[str, object] | None:
+    if not any(is_deliberative_source_name(source_name) for source_name in source_names):
+        return None
+    return {
+        "regime": "llm_deliberative",
+        "mode": settings.deliberation_mode,
+        "n_candidates": settings.deliberation_n_candidates,
+        "candidate_temperature": settings.deliberation_candidate_temperature,
+        "critic_temperature": settings.deliberation_critic_temperature,
+        "final_temperature": settings.deliberation_final_temperature,
+        "max_opponent_replies": settings.deliberation_max_opponent_replies,
+        "max_analysis_tokens": settings.deliberation_max_analysis_tokens,
+        "max_final_tokens": settings.deliberation_max_final_tokens,
+        "persist_intermediate_prompts": settings.deliberation_persist_intermediate_prompts,
+    }
+
+
+def _base_source_identity(source_name: str) -> str:
+    if is_deliberative_source_name(source_name):
+        return deliberative_inner_source_name(source_name)
+    if is_reranked_source_name(source_name):
+        return inner_source_name(source_name)
+    return source_name
 
 
 def _config_hash(payload: dict[str, object]) -> str:

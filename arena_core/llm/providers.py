@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from arena_core.config import Settings
-from arena_core.llm.base import LLMResponse, LLMService
+from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
 from arena_core.llm.ollama import OllamaLLMService
 
 
@@ -33,18 +33,30 @@ class OpenAICompatibleLLMService(LLMService):
         self._timeout = timeout_seconds
         self._max_retries = max_retries
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
+        temperature = options.temperature if options and options.temperature is not None else 0
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+        }
+        if options and options.top_p is not None:
+            payload["top_p"] = options.top_p
+        if options and options.num_predict is not None:
+            payload["max_tokens"] = options.num_predict
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await _post_with_retries(
                 client,
                 f"{self._base_url}/chat/completions",
                 max_retries=self._max_retries,
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0,
-                },
+                json=payload,
             )
         payload = response.json()
         choice = payload.get("choices", [{}])[0]
@@ -72,7 +84,13 @@ class AnthropicLLMService(LLMService):
         self._timeout = timeout_seconds
         self._max_retries = max_retries
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await _post_with_retries(
                 client,
@@ -84,8 +102,12 @@ class AnthropicLLMService(LLMService):
                 },
                 json={
                     "model": model,
-                    "max_tokens": 512,
-                    "temperature": 0,
+                    "max_tokens": (
+                        options.num_predict if options and options.num_predict is not None else 512
+                    ),
+                    "temperature": (
+                        options.temperature if options and options.temperature is not None else 0
+                    ),
                     "messages": [{"role": "user", "content": prompt}],
                 },
             )
@@ -122,11 +144,24 @@ class GeminiLLMService(LLMService):
         self._timeout = timeout_seconds
         self._max_retries = max_retries
 
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={self._api_key}"
         )
+        generation_config: dict[str, float | int] = {
+            "temperature": options.temperature if options and options.temperature is not None else 0
+        }
+        if options and options.top_p is not None:
+            generation_config["topP"] = options.top_p
+        if options and options.num_predict is not None:
+            generation_config["maxOutputTokens"] = options.num_predict
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await _post_with_retries(
                 client,
@@ -134,7 +169,7 @@ class GeminiLLMService(LLMService):
                 max_retries=self._max_retries,
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0},
+                    "generationConfig": generation_config,
                 },
             )
         payload: dict[str, Any] = response.json()

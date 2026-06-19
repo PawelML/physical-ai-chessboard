@@ -240,6 +240,7 @@ export type GameJob = {
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
+  inference_mode: InferenceMode;
   max_plies: number | null;
   stockfish_level: StockfishLevel | null;
   games_requested: number | null;
@@ -255,6 +256,8 @@ export type GameJob = {
 };
 
 export type GuidanceMode = "legal_list" | "strategic_memory";
+
+export type InferenceMode = "single_shot" | "native_think" | "revise" | "candidate_critic";
 
 export type StockfishLevel = "beginner" | "club";
 
@@ -294,6 +297,7 @@ export type StartGamePayload = {
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
+  inference_mode: InferenceMode;
   max_plies: number | null;
 };
 
@@ -309,6 +313,7 @@ export type StartStockfishMatchPayload = {
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
+  inference_mode: InferenceMode;
   max_plies: number | null;
 };
 
@@ -324,6 +329,7 @@ export type StartHumanGamePayload = {
   ollama_thinking: boolean;
   ollama_cpu_offload: boolean;
   guidance_mode: GuidanceMode;
+  inference_mode: InferenceMode;
   max_plies: number | null;
 };
 

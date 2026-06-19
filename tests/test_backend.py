@@ -6,7 +6,7 @@ from arena_core.annotations import annotate_game
 from arena_core.config import Settings
 from arena_core.engine import ArenaGame, RandomMoveSource, StaticMoveSource
 from arena_core.leaderboards import rebuild_game_summaries
-from arena_core.llm.base import LLMResponse, LLMService
+from arena_core.llm.base import GenerationOptions, LLMResponse, LLMService
 from arena_core.persistence.database import create_session_factory, init_db
 from arena_core.tournaments import TournamentConfig, run_tournament
 from backend.main import (
@@ -20,7 +20,14 @@ from backend.main import (
 
 
 class StubLLMService(LLMService):
-    async def complete(self, *, model: str, prompt: str) -> LLMResponse:
+    async def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: GenerationOptions | None = None,
+    ) -> LLMResponse:
+        del model, prompt, options
         return LLMResponse(content="backend commentary")
 
 

@@ -44,9 +44,10 @@ import {
 import { applyUciMoveToFen, startFen } from "./chess";
 import { ChessBoard } from "./ChessBoard";
 import { movesLabel, rateWithCi, sampleRate, scorePercent } from "./format";
+import { stockfishLiveLabel } from "./jobLabels";
 import { ModelComparison } from "./ModelComparison";
 import { Metric, RuntimePanel } from "./RuntimePanel";
-import { StartGamePanel, stockfishLiveLabel } from "./StartGamePanel";
+import { StartGamePanel } from "./StartGamePanel";
 
 export default function App() {
   const queryClient = useQueryClient();
