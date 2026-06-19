@@ -1597,3 +1597,72 @@ training run.
 - Conclusion: runtime scaffolding is ready for a tiny smoke, but not yet a full benchmark. The next
   practical blocker is exposing the trained pairwise LoRA as a runtime critic model and measuring
   latency with real Ollama/adapter inference.
+
+2026-06-20 runtime export and tiny smoke:
+
+- Added `qwen25` template support to `finetune.export_ollama` because the pairwise critic is based
+  on `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`, not the Qwen3.5 empty-think template.
+- Exported the 1,200-step pairwise critic to local ignored Q4 GGUF:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - GGUF:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_gguf/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf`;
+  - Ollama model:
+    `chess-critic-pairwise-qwen25-1.5b-policy1k-1200-q4_k_m:latest`.
+- Unsloth's direct GGUF wrapper failed again with the local converter `target_model_dir` mismatch,
+  so the successful path was:
+  - let Unsloth merge the adapter to HF;
+  - run `/home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py` manually;
+  - run `/home/pawelo/.unsloth/llama.cpp/llama-quantize` to Q4_K_M;
+  - run `ollama create` from the generated Modelfile.
+- Removed temporary BF16 GGUF and merged HF weights after Ollama import; kept only the Q4 GGUF and
+  Modelfile under ignored outputs.
+- Sanity prompt result:
+  - prompt compared `e2e4` vs `g1f3` from the starting position;
+  - model returned strict JSON: `{"move":"g1f3"}`.
+- Mechanical arena smoke:
+  - database: `arena-pairwise-smoke.db`;
+  - 1 game, max 4 plies, `n_candidates=3`;
+  - result: 2/2 model moves legal, 0 invalid pairwise decisions;
+  - model move CPLs: 33 and 5;
+  - observed LLM move latency: 5.7s then 1.8s.
+- Five-game short smoke:
+  - database: `arena-pairwise-smoke-5g.db`;
+  - `candidate_pairwise`, `n_candidates=3`, max 20 plies, Stockfish Elo 1320, seed 0;
+  - 50/50 model attempts parsed and legal;
+  - average distinct legal candidates: 2.42;
+  - changed moves: 29/50 (58%);
+  - invalid pairwise decisions: 0;
+  - average model latency: 1.54s, with 0.45s from pairwise judging;
+  - average CPL: 125.09 across classified model moves;
+  - blunders: 7/50, mistakes: 5/50, mate missed: 2.
+- Changed-move audit for the `n_candidates=3` smoke:
+  - changed moves: 29;
+  - improved changed moves vs generator first candidate: 15;
+  - worsened changed moves vs generator first candidate: 13;
+  - mean delta first-minus-selected on changed moves: -8.89 CPL;
+  - selected blunders on changed moves: 5, same as first-candidate blunders on changed moves.
+- Five-game `n_candidates=5` smoke:
+  - database: `arena-pairwise-smoke-5g-n5.db`;
+  - average distinct legal candidates: 3.14;
+  - changed moves: 22/50 (44%);
+  - invalid pairwise decisions: 0;
+  - average model latency: 2.24s, with 0.99s from pairwise judging;
+  - average CPL: 126.34;
+  - blunders: 9/50, mistakes: 7/50.
+- Same short-run single-shot baseline:
+  - database: `arena-single-shot-smoke-5g.db`;
+  - same model, Stockfish Elo 1320, seed 0, max 20 plies;
+  - average model latency: 0.60s;
+  - average CPL: 100.25 across classified model moves;
+  - blunders: 4/44, mistakes: 6/44;
+  - one game ended by repeated illegal `e1g1` forfeit after retries.
+- Interpretation:
+  - Runtime pairwise selection is mechanically clean and not too slow at `n_candidates=3`.
+  - Increasing to `n_candidates=5` increased latency and did not improve quality in this smoke.
+  - The offline selector quality did not transfer to this short game smoke: CPL and blunders were
+    worse than single-shot, despite eliminating illegal retries.
+  - Do not run the 20-game benchmark yet.
+  - Next useful experiment is either a confidence-gated selector that keeps the generator's first
+    move unless the pairwise vote margin is strong, or more training data from actual runtime
+    candidate prompts rather than offline choice rows.

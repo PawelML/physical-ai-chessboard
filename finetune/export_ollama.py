@@ -18,6 +18,13 @@ QWEN35_TEMPLATE = """<|im_start|>user
 
 """
 
+QWEN25_TEMPLATE = """<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+
 GEMMA4_TEMPLATE = """<bos><|turn>user
 {{ .Prompt }}<turn|>
 <|turn>model
@@ -26,6 +33,10 @@ GEMMA4_TEMPLATE = """<bos><|turn>user
 TEMPLATE_FAMILIES = {
     "qwen35": {
         "template": QWEN35_TEMPLATE,
+        "stop": ["<|im_end|>"],
+    },
+    "qwen25": {
+        "template": QWEN25_TEMPLATE,
         "stop": ["<|im_end|>"],
     },
     "gemma4": {
