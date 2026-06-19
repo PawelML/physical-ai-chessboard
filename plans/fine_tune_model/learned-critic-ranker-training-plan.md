@@ -567,6 +567,7 @@ Dataset:
 - [ ] Add fresh policy candidate sampling mode.
 - [x] Split by FEN, not candidate row.
 - [x] Emit JSONL plus metadata summary.
+- [x] Add position-level `finetune/build_critic_choice_dataset.py`.
 
 Training:
 
@@ -655,6 +656,7 @@ If that answer is yes, the approach has a realistic path to reducing blunders/ga
   - oracle vs first generator candidate: mean CPL reduction 102.88 over 56
     positions with Qwen candidates.
 - Added `finetune/evaluate_critic_ranker_lora.py`.
+- Added `finetune/analyze_critic_choice_predictions.py`.
 - Ran two local ignored Qwen2.5 1.5B LoRA critic probes:
   - unbalanced train split:
     `outputs/finetune/critic_ranker_qwen25_15b_pilot_lora`;
@@ -672,10 +674,40 @@ If that answer is yes, the approach has a realistic path to reducing blunders/ga
     oracle move match 7/20 positions;
   - balanced failure mode: predictions became diverse, but overcalled blunders
     and still ranked candidates poorly.
+- Built a larger local ignored candidate-level dataset from runs `23`, `24`,
+  and `25`:
+  - output: `data/finetune/critic_ranker_candidate_runs_23_25.jsonl`;
+  - metadata: `data/finetune/critic_ranker_candidate_runs_23_25.meta.json`;
+  - result: 2519 candidate rows from 595 positions.
+- Added the simpler position-level choice task:
+  - builder: `finetune/build_critic_choice_dataset.py`;
+  - output: `data/finetune/critic_choice_candidate_runs_23_25.jsonl`;
+  - metadata: `data/finetune/critic_choice_candidate_runs_23_25.meta.json`;
+  - result: 419 choice rows, 337 train, 42 validation, 40 test;
+  - target prompt index is now distributed across positions 1-8. An earlier
+    local run sorted candidates by quality and leaked the answer; that adapter
+    is ignored and should not be used.
+- Ran a local ignored Qwen2.5 1.5B LoRA choice probe:
+  - adapter: `outputs/finetune/critic_choice_qwen25_15b_shuffled_lora`;
+  - validation predictions:
+    `outputs/finetune/critic_choice_qwen25_15b_shuffled_predictions.jsonl`;
+  - analysis:
+    `outputs/finetune/critic_choice_qwen25_15b_shuffled_analysis.json`.
+- Held-out choice validation result on 42 rows:
+  - JSON parse: 42/42;
+  - legal moves: 42/42;
+  - candidate-list moves: 42/42;
+  - oracle top-1 match: 19/42, 45.24%;
+  - selected mean CPL: 200.74;
+  - first prompt candidate mean CPL: 205.13;
+  - oracle target mean CPL: 7.95.
 
-Conclusion: the pipeline is valid, but this small dataset/model setup does not
-pass the runtime gate. Do not wire `learned_critic` yet.
+Conclusion after the choice probe: the model learned JSON format and candidate
+membership, but not chess ranking. It improved only marginally over choosing the
+first displayed candidate and remains far from oracle. Do not wire
+`learned_critic` yet.
 
-Next implementation step: build a larger candidate-heavy dataset from fixed
-candidate-critic runs plus fresh policy sampling, then train/evaluate again with
-a simpler ranking target before any runtime integration.
+Next implementation step: generate substantially more policy candidates, not
+just reuse the small candidate-critic runs. The next dataset should target at
+least 20k-30k candidate rows / several thousand choice positions before another
+training run.
