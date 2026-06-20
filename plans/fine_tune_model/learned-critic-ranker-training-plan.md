@@ -1938,3 +1938,77 @@ training run.
     and old validation, so checkpoint 400 should be selected for the next external check.
   - Next step: export checkpoint 400 to an Ollama/GGUF critic model, then run a small arena smoke
     with the runtime pairwise selector before spending a larger Stockfish benchmark budget.
+
+2026-06-20 staged runtime400 export and arena smoke:
+
+- Exported checkpoint 400 from the staged continuation run:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_lora/checkpoint-400`;
+  - output:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_gguf`;
+  - Q4 GGUF:
+    `Qwen2.5-1.5B-Instruct.Q4_K_M.gguf`.
+- The direct Unsloth GGUF export path hit the same local converter issue as before:
+  `ModelBase.__init__() got an unexpected keyword argument 'target_model_dir'`.
+  The fallback path succeeded:
+  - merge LoRA to HF in the export directory;
+  - convert HF to BF16 GGUF with `/home/pawelo/.unsloth/llama.cpp/convert_hf_to_gguf.py`;
+  - quantize to Q4_K_M with `/home/pawelo/.unsloth/llama.cpp/llama-quantize`;
+  - create Ollama models with `finetune.export_ollama --skip-export --create-ollama`.
+- Created local Ollama models:
+  - `chess-critic-pairwise-qwen25-1.5b-policy1k1200-runtime400-q4_k_m:latest`;
+  - `chess-critic-pairwise-qwen25-1.5b-policy1k1200-runtime400-f16:latest`.
+- Sanity prompt check against the Q4 model:
+  - source: first validation row from
+    `data/finetune/runtime_qwen35_9b_run18_1300_pairwise.validation.jsonl`;
+  - expected: `{"move":"e5d4"}`;
+  - response: `{"move":"e5d4"}`.
+- Mechanical arena smoke:
+  - database: `arena-pairwise-runtime400-smoke.db` (ignored);
+  - `candidate_pairwise`, `n_candidates=3`, max 4 plies, Stockfish Elo 1320;
+  - accepted model moves: 2/2 parse ok and 2/2 legal;
+  - model attempts: 2/2 parse ok and 2/2 legal;
+  - average distinct legal candidates: 2.50;
+  - changed moves: 1/2 (50%);
+  - invalid pairwise decisions: 0;
+  - average model latency: 46.12s, dominated by cold model load;
+  - average pairwise judging latency after load: 0.46s;
+  - average CPL: 32.00.
+- Five-game short smoke:
+  - database: `arena-pairwise-runtime400-smoke-5g.db` (ignored);
+  - `candidate_pairwise`, `n_candidates=3`, max 20 plies, Stockfish Elo 1320;
+  - accepted model moves: 50/50 parse ok and 50/50 legal;
+  - model attempts: 51/51 parse ok and 50/51 legal, with 1 constrained retry;
+  - average distinct legal candidates: 1.82;
+  - changed moves: 26/50 (52%);
+  - invalid pairwise decisions: 0;
+  - average model latency: 1.91s, with 0.40s from pairwise judging;
+  - average CPL: 135.88;
+  - classifications: 14 best, 15 good, 7 inaccuracy, 5 mistake, 8 blunder,
+    1 mate_missed.
+- Changed-move audit against the generator's first legal candidate:
+  - changed moves: 26;
+  - comparable CPL changed moves: 25;
+  - improved changed moves vs first candidate: 10;
+  - worsened changed moves vs first candidate: 14;
+  - equal changed moves: 1;
+  - mean delta first-minus-selected on comparable changed moves: -28.64 CPL;
+  - selected blunders on changed moves: 4;
+  - first-candidate blunders on changed moves: 4.
+- Comparison to the previous `policy1k-1200` runtime smoke:
+  - previous n=3 smoke average CPL was 125.09 with average 2.42 distinct legal candidates,
+    58% changed moves, and 0 invalid pairwise decisions;
+  - runtime400 n=3 smoke average CPL is worse at 135.88 and has only 1.82 distinct legal
+    candidates on average;
+  - previous single-shot short-run baseline was also better at 100.25 average CPL.
+- Interpretation:
+  - The staged runtime400 checkpoint is a genuine offline pairwise improvement, but this did not
+    transfer to better short-run arena play.
+  - The critical runtime failure is not malformed pairwise output: pairwise parsing is clean.
+    The failure is selection quality plus weak candidate diversity from the Qwen3.5 generator.
+  - Do not spend a 20-game benchmark budget on this exact runtime selector yet.
+  - The next useful implementation step is to make pairwise selection more conservative, for
+    example by keeping the generator's first candidate unless the pairwise winner has a strong
+    vote margin or by adding a cheap tactical veto for selected moves that lose badly. In
+    parallel, collect more runtime candidate data because offline accuracy alone is not predictive
+    enough for arena CPL.
