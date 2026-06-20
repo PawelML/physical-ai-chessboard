@@ -1889,3 +1889,52 @@ training run.
     - collect a larger runtime set before mixing, at least 2k-5k positions and preferably 10k;
     - or train in stages: start from the old 1200-step adapter, continue only on runtime pairs with
       checkpoint selection against runtime validation/test and old validation.
+
+2026-06-20 staged old-adapter plus runtime-only continuation probe:
+
+- Added staged continuation support to `finetune.smoke_train`:
+  - `--initial-adapter-dir` loads an existing LoRA adapter and keeps it trainable;
+  - `--save-steps` and `--save-total-limit` make short checkpoint sweeps explicit.
+- Trained a staged runtime adapter starting from the previous best offline+policy1k selector:
+  - initial adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - runtime train data:
+    `data/finetune/runtime_qwen35_9b_run18_1300_pairwise.train.jsonl`;
+  - output:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_lora`;
+  - base: `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`;
+  - train rows: 2481;
+  - max steps: 400;
+  - save steps: 100;
+  - learning rate: 5e-5;
+  - train runtime: 340.3 seconds;
+  - train loss: 0.04425.
+- Runtime validation checkpoint sweep:
+  - checkpoint 100: 175/269 top-1, 65.06%, with 100% parse/legal;
+  - checkpoint 200: 168/269 top-1, 62.45%, with 100% parse/legal;
+  - checkpoint 300: 186/269 top-1, 69.14%, with 100% parse/legal;
+  - checkpoint 400: 183/269 top-1, 68.03%, with 100% parse/legal.
+- Runtime test for the two strongest validation checkpoints:
+  - checkpoint 300: 270/345 top-1, 78.26%, with 100% parse/legal;
+  - checkpoint 400: 273/345 top-1, 79.13%, with 100% parse/legal.
+- Frozen old validation:
+  - checkpoint 300: 1056/1523 top-1, 69.34%, with 100% parse/legal;
+  - checkpoint 400: 1079/1523 top-1, 70.85%, with 100% parse/legal.
+- Comparison against previous adapters:
+  - previous offline+policy1k adapter:
+    - runtime validation/test: 63.20% / 76.23%;
+    - old validation: 69.47%.
+  - runtime-only fresh 400-step adapter:
+    - runtime validation/test: 66.54% / 77.39%.
+  - naive mixed old+runtime 1200-step adapter:
+    - runtime validation/test: 63.94% / 73.04%;
+    - old validation: 68.15%.
+- Interpretation:
+  - Staged continuation is the first clearly positive transfer result.
+  - Checkpoint 400 is the best current candidate: it improves runtime test by +2.90 pp over the
+    old adapter, +1.74 pp over runtime-only, and also improves old validation by +1.38 pp over the
+    old adapter.
+  - Checkpoint 300 has the best runtime validation, but checkpoint 400 wins on both runtime test
+    and old validation, so checkpoint 400 should be selected for the next external check.
+  - Next step: export checkpoint 400 to an Ollama/GGUF critic model, then run a small arena smoke
+    with the runtime pairwise selector before spending a larger Stockfish benchmark budget.
