@@ -1787,3 +1787,61 @@ training run.
     candidate rows.
   - Scale target before another training run: at least 2k-5k positions sampled from large local
     arena runs, then train/evaluate with a held-out FEN split from the same runtime distribution.
+
+2026-06-20 run18 1300-position runtime pairwise probe:
+
+- Added `--position-offset` to `finetune.sample_policy_candidates` so long runtime-prompt sampling
+  can be chunked without repeating already-sampled unique FENs.
+- Sampled the next 1000 positions from `arena.db`, `run_id=18`, offset 300, with `qwen3.5:9b`.
+- Offset chunk sampler result:
+  - 1000 requests;
+  - 3156 legal unique policy candidate rows;
+  - 0 service errors;
+  - 126 positions produced no legal candidates;
+  - 874/1000 positions produced at least one legal candidate.
+- Combined candidate input:
+  - path: `data/finetune/runtime_qwen35_9b_run18_1300_candidates.jsonl` (ignored);
+  - 4183 policy candidate rows across the first 1300 unique positions of run 18.
+- Stockfish-labeled ranker dataset:
+  - path: `data/finetune/runtime_qwen35_9b_run18_1300_ranker.jsonl` (ignored);
+  - 6023 rows from 1300 positions;
+  - source counts: 3783 `policy_sample`, 1222 `arena_move`, 137 `arena_blunder`,
+    881 `stockfish_good`;
+  - risk counts: 1992 good, 1659 playable, 779 mistake, 1593 blunder.
+- Analysis:
+  - positions with Qwen policy candidates: 1102/1300;
+  - mixed safe/unsafe positions: 879/1300;
+  - arena final mean CPL: 80.50;
+  - first generator candidate mean CPL: 272.30 on 1102 positions;
+  - oracle candidate mean CPL: 8.61;
+  - oracle gain vs first generator: 268.09 CPL on 1102 positions;
+  - oracle gain vs arena final: 69.94 CPL on 1300 positions.
+- Pairwise dataset:
+  - path: `data/finetune/runtime_qwen35_9b_run18_1300_pairwise.jsonl` (ignored);
+  - 3095 safe-vs-unsafe rows from 878/1300 positions;
+  - split: 2481 train, 269 validation, 345 test;
+  - pair risks: 1348 blunder/good, 787 blunder/playable, 800 good/mistake,
+    160 mistake/playable;
+  - target prompt index is balanced: 1561 at index 1, 1534 at index 2.
+- Baseline transfer from the previous offline+policy1k pairwise adapter:
+  - adapter: `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora`;
+  - validation: 170/269 top-1, 63.20%, with 100% parse/legal;
+  - test: 263/345 top-1, 76.23%, with 100% parse/legal.
+- Runtime-distribution 400-step pairwise adapter:
+  - adapter: `outputs/finetune/critic_pairwise_qwen25_15b_runtime_run18_1300_400_lora`;
+  - base: `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`;
+  - train rows: 2481;
+  - steps: 400;
+  - train runtime: 339.2 seconds;
+  - train loss: 0.06089.
+- Runtime adapter evaluation:
+  - validation: 179/269 top-1, 66.54%, with 100% parse/legal;
+  - test: 267/345 top-1, 77.39%, with 100% parse/legal.
+- Interpretation:
+  - Training on runtime-prompt pairs improves over the previous selector on both validation and
+    test, but the gain is modest: +9 validation pairs and +4 test pairs.
+  - This supports the distribution-matching hypothesis, but 2481 train pairs are still too few to
+    justify exporting this as a new runtime critic.
+  - Next best move is to scale the same process to at least 2k-5k sampled positions and combine
+    runtime pairs with the stronger older mixed pairwise set, then evaluate composed
+    multi-candidate selection before another arena benchmark.
