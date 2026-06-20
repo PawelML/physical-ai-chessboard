@@ -2478,3 +2478,40 @@ training run.
   - `min_safe_score`: 1.0;
   - `n_vetoed`: 0;
   - `all_vetoed`: false.
+
+2026-06-20 short runtime sanity benchmark:
+
+- Database: `arena-risk-logprob-short.db` (ignored generated artifact).
+- Baseline command shape:
+  `arena tournament qwen3.5:9b stockfish --game-count 4 --max-plies 30 --seed 20260620`.
+- Learned-reranker command shape:
+  `arena tournament reranked:qwen3.5:9b stockfish --game-count 4 --max-plies 30 --seed 20260620`.
+- Learned-reranker settings:
+  - `ARENA_RERANKER_SCORER=risk_logprob`;
+  - checkpoint:
+    `outputs/finetune/critic_ranker_qwen25_15b_balanced_then_runtime_policy_only_run18_3300_400_lora/checkpoint-400`;
+  - `ARENA_RERANKER_N_CANDIDATES=3`;
+  - `ARENA_RERANKER_TEMPERATURE=0.7`;
+  - `ARENA_RERANKER_RISK_LOGPROB_MIN_SAFE_SCORE=1.0`;
+  - `ARENA_OLLAMA_THINK=off`;
+  - `ARENA_OLLAMA_NUM_CTX=4096`.
+
+| Run | Games | Model moves | Avg CPL | Median CPL | Blunders | CPL > 300 | Invalid/illegal attempts | Avg model move latency |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline `qwen3.5:9b` | 4 | 38 | 148.31 | 73 | 7 | 7 | 0 | 1130.9 ms |
+| `risk_logprob` reranked | 4 | 47 | 117.95 | 79 | 4 | 4 | 0 | 3349.7 ms |
+
+- Reranker metadata on the 47 model moves:
+  - selected move changed vs first legal candidate: 7;
+  - all-vetoed moves: 0;
+  - average distinct legal candidates: 1.60;
+  - average legal sampled candidates including duplicates: 2.32;
+  - average vetoed candidates: 0;
+  - chosen expected-risk-score range: 1.071-1.208, mean 1.133.
+- Short benchmark interpretation:
+  - This is not statistically strong enough to claim a real playing-strength gain.
+  - It is, however, a promising runtime sanity result: average CPL, blunder count, and large
+    mistakes all improved versus the same short baseline.
+  - The current idea has therefore not failed yet.
+  - Before a 20-game run, fix runtime efficiency: tournament currently reloads the Unsloth scorer
+    between games, making the experimental scorer unnecessarily slow.
