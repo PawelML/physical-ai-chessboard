@@ -2012,3 +2012,56 @@ training run.
     vote margin or by adding a cheap tactical veto for selected moves that lose badly. In
     parallel, collect more runtime candidate data because offline accuracy alone is not predictive
     enough for arena CPL.
+
+2026-06-20 conservative pairwise margin probe:
+
+- Added an experimental runtime knob:
+  - setting: `ARENA_DELIBERATION_PAIRWISE_MIN_VOTE_MARGIN`;
+  - default: `0`, preserving the existing `candidate_pairwise` behavior;
+  - when set above zero, `candidate_pairwise` keeps the generator's first legal candidate unless
+    the pairwise vote winner beats that first candidate by at least the configured vote margin.
+- Added persisted metadata for analysis:
+  - `pairwise_vote_winner`;
+  - `pairwise_vote_margin_to_first`;
+  - `pairwise_min_vote_margin`;
+  - `pairwise_margin_fallback_applied`.
+- Counterfactual replay on the previous runtime400 5-game smoke suggested the idea was plausible:
+  - source database: `arena-pairwise-runtime400-smoke-5g.db` (ignored);
+  - simulated min margin: 2;
+  - accepted pairwise winner: 21/50 moves;
+  - margin fallbacks: 17/50 moves;
+  - changed moves vs first candidate: 9/50;
+  - average CPL improved from 135.88 to 125.70 in the replay.
+- Real five-game smoke with the new setting:
+  - database: `arena-pairwise-runtime400-margin2-smoke-5g.db` (ignored);
+  - `candidate_pairwise`, `n_candidates=3`, `pairwise_min_vote_margin=2`,
+    max 20 plies, Stockfish Elo 1320;
+  - accepted model moves: 50/50 parse ok and 50/50 legal;
+  - model attempts: 57/57 parse ok and 50/57 legal, with 7 constrained retries;
+  - average distinct legal candidates: 1.98;
+  - changed moves: 4/50 (8%);
+  - margin fallbacks: 15/50 (30%);
+  - vote margins: 4 at margin 2, 15 at margin 1, 24 at margin 0, 7 with no pairwise winner;
+  - invalid pairwise decisions: 0;
+  - average model latency: 2.02s, with 0.39s from pairwise judging;
+  - average CPL: 136.68;
+  - classifications: 15 best, 5 good, 13 inaccuracy, 10 mistake, 7 blunder.
+- Changed-move audit against the generator's first legal candidate:
+  - changed moves: 4;
+  - improved changed moves vs first candidate: 1;
+  - worsened changed moves vs first candidate: 3;
+  - mean delta first-minus-selected on changed moves: -80.50 CPL;
+  - selected blunders on changed moves: 1;
+  - first-candidate blunders on changed moves: 0.
+- Validation:
+  - `.venv/bin/pytest -q`: 99 passed, 1 warning;
+  - `.venv/bin/ruff check backend arena_core finetune tests`: passed.
+- Interpretation:
+  - The conservative margin is useful as an analysis and ablation knob, but margin-only gating did
+    not improve real short-run play.
+  - The real smoke regressed because the generator's first candidate is often not strong enough,
+    and no-candidate/single-shot fallbacks still create retry pressure.
+  - The next useful implementation should not simply make pairwise more conservative. It should
+    either improve candidate generation/diversity, add a stronger legality/format fallback for
+    no-candidate positions, or collect a larger runtime candidate dataset and retrain against
+    actual generated candidates.

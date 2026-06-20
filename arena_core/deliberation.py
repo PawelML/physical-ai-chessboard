@@ -42,6 +42,7 @@ class DeliberationConfig:
     max_analysis_tokens: int = 1024
     max_final_tokens: int = 64
     max_pairwise_tokens: int = 24
+    pairwise_min_vote_margin: int = 0
     persist_intermediate_prompts: bool = True
 
 
@@ -86,6 +87,9 @@ class PairwiseDecision:
 @dataclass(frozen=True)
 class PairwiseSelectionResult:
     selected: DeliberationCandidate
+    vote_winner: DeliberationCandidate
+    vote_margin_to_first: int
+    margin_fallback_applied: bool
     vote_counts: dict[str, int]
     decisions: list[PairwiseDecision]
     prompts: list[str]
@@ -417,6 +421,10 @@ class DeliberativeLLMMoveSource:
             {
                 "final_move": final_uci,
                 "changed_move": final_uci != first_uci,
+                "pairwise_vote_winner": pairwise_result.vote_winner.uci,
+                "pairwise_vote_margin_to_first": pairwise_result.vote_margin_to_first,
+                "pairwise_min_vote_margin": self.config.pairwise_min_vote_margin,
+                "pairwise_margin_fallback_applied": pairwise_result.margin_fallback_applied,
                 "pairwise_vote_counts": pairwise_result.vote_counts,
                 "pairwise_decisions": [
                     decision.to_metadata() for decision in pairwise_result.decisions
@@ -424,7 +432,11 @@ class DeliberativeLLMMoveSource:
                 "pairwise_prompt_count": len(pairwise_result.prompts),
                 "pairwise_cache_hits": pairwise_result.cache_hits,
                 "pairwise_invalid_count": pairwise_result.invalid_count,
-                "selection_method": "pairwise_votes_tiebreak_generator_order",
+                "selection_method": (
+                    "pairwise_votes_tiebreak_generator_order_min_margin"
+                    if self.config.pairwise_min_vote_margin > 0
+                    else "pairwise_votes_tiebreak_generator_order"
+                ),
                 "stage_token_usage": {
                     "candidate": _token_total(candidate_proposal),
                     "pairwise": sum(
@@ -457,6 +469,9 @@ class DeliberativeLLMMoveSource:
         if len(candidates) == 1:
             return PairwiseSelectionResult(
                 selected=candidates[0],
+                vote_winner=candidates[0],
+                vote_margin_to_first=0,
+                margin_fallback_applied=False,
                 vote_counts={candidates[0].uci: 0},
                 decisions=[],
                 prompts=[],
@@ -507,12 +522,22 @@ class DeliberativeLLMMoveSource:
             votes[decision.selected_uci] += 1
             decisions.append(decision)
 
-        selected_uci = max(
+        vote_winner_uci = max(
             votes,
             key=lambda uci: (votes[uci], -by_uci[uci].first_index),
         )
+        first_uci = candidates[0].uci
+        vote_margin_to_first = votes[vote_winner_uci] - votes[first_uci]
+        margin_fallback_applied = (
+            vote_winner_uci != first_uci
+            and vote_margin_to_first < self.config.pairwise_min_vote_margin
+        )
+        selected_uci = first_uci if margin_fallback_applied else vote_winner_uci
         return PairwiseSelectionResult(
             selected=by_uci[selected_uci],
+            vote_winner=by_uci[vote_winner_uci],
+            vote_margin_to_first=vote_margin_to_first,
+            margin_fallback_applied=margin_fallback_applied,
             vote_counts=votes,
             decisions=decisions,
             prompts=prompts,

@@ -268,3 +268,71 @@ async def test_candidate_pairwise_uses_cache_for_repeated_position_pairs() -> No
         "candidate": 2,
         "pairwise": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairwise_min_vote_margin_keeps_first_candidate() -> None:
+    source = FakeDeliberationSource(
+        [
+            '{"candidates":[{"move":"e2e4"},{"move":"d2d4"},{"move":"g1f3"}]}',
+            '{"move":"e2e4"}',
+            '{"move":"g1f3"}',
+            '{"move":"g1f3"}',
+        ]
+    )
+    deliberative = DeliberativeLLMMoveSource(
+        inner=source,
+        config=DeliberationConfig(
+            mode="candidate_pairwise",
+            pairwise_min_vote_margin=2,
+            persist_intermediate_prompts=False,
+        ),
+    )
+
+    proposal = await deliberative.propose(prompt="original prompt", board=chess.Board())
+
+    assert proposal.raw_response == '{"move":"e2e4"}'
+    assert proposal.metadata is not None
+    assert proposal.metadata["final_move"] == "e2e4"
+    assert proposal.metadata["changed_move"] is False
+    assert proposal.metadata["pairwise_vote_winner"] == "g1f3"
+    assert proposal.metadata["pairwise_vote_counts"] == {
+        "e2e4": 1,
+        "d2d4": 0,
+        "g1f3": 2,
+    }
+    assert proposal.metadata["pairwise_vote_margin_to_first"] == 1
+    assert proposal.metadata["pairwise_min_vote_margin"] == 2
+    assert proposal.metadata["pairwise_margin_fallback_applied"] is True
+    assert (
+        proposal.metadata["selection_method"]
+        == "pairwise_votes_tiebreak_generator_order_min_margin"
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairwise_min_vote_margin_allows_strong_winner() -> None:
+    source = FakeDeliberationSource(
+        [
+            '{"candidates":[{"move":"e2e4"},{"move":"d2d4"},{"move":"g1f3"}]}',
+            '{"move":"d2d4"}',
+            '{"move":"g1f3"}',
+            '{"move":"g1f3"}',
+        ]
+    )
+    deliberative = DeliberativeLLMMoveSource(
+        inner=source,
+        config=DeliberationConfig(
+            mode="candidate_pairwise",
+            pairwise_min_vote_margin=2,
+            persist_intermediate_prompts=False,
+        ),
+    )
+
+    proposal = await deliberative.propose(prompt="original prompt", board=chess.Board())
+
+    assert proposal.raw_response == '{"move":"g1f3"}'
+    assert proposal.metadata is not None
+    assert proposal.metadata["pairwise_vote_winner"] == "g1f3"
+    assert proposal.metadata["pairwise_vote_margin_to_first"] == 2
+    assert proposal.metadata["pairwise_margin_fallback_applied"] is False

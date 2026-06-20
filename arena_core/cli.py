@@ -453,6 +453,7 @@ def _deliberation_config(settings: Settings) -> DeliberationConfig:
         max_analysis_tokens=settings.deliberation_max_analysis_tokens,
         max_final_tokens=settings.deliberation_max_final_tokens,
         max_pairwise_tokens=settings.deliberation_max_pairwise_tokens,
+        pairwise_min_vote_margin=settings.deliberation_pairwise_min_vote_margin,
         persist_intermediate_prompts=settings.deliberation_persist_intermediate_prompts,
     )
 

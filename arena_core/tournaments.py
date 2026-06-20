@@ -569,6 +569,7 @@ def _deliberation_options(source_names: list[str], settings: Settings) -> dict[s
         "max_analysis_tokens": settings.deliberation_max_analysis_tokens,
         "max_final_tokens": settings.deliberation_max_final_tokens,
         "max_pairwise_tokens": settings.deliberation_max_pairwise_tokens,
+        "pairwise_min_vote_margin": settings.deliberation_pairwise_min_vote_margin,
         "pairwise_critic_model": settings.deliberation_pairwise_critic_model,
         "persist_intermediate_prompts": settings.deliberation_persist_intermediate_prompts,
     }

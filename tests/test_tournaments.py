@@ -453,6 +453,7 @@ async def test_tournament_records_deliberative_regime_in_snapshot(
         "max_analysis_tokens": 1024,
         "max_final_tokens": 64,
         "max_pairwise_tokens": 24,
+        "pairwise_min_vote_margin": 0,
         "pairwise_critic_model": None,
         "persist_intermediate_prompts": True,
     }
