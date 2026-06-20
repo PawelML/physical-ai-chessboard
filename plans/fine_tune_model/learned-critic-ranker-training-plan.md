@@ -2065,3 +2065,90 @@ training run.
     either improve candidate generation/diversity, add a stronger legality/format fallback for
     no-candidate positions, or collect a larger runtime candidate dataset and retrain against
     actual generated candidates.
+
+2026-06-20 run18 larger runtime dataset and continuation probe:
+
+- Sampled an additional runtime-prompt chunk from `arena.db`, `run_id=18`, using `qwen3.5:9b`:
+  - position offset: 1300;
+  - max positions: 2000;
+  - samples per position: 1;
+  - requested candidates: 5;
+  - temperature: 0.7;
+  - context: 4096;
+  - output:
+    `data/finetune/runtime_qwen35_9b_run18_offset1300_2000_candidates.jsonl`
+    (ignored).
+- New chunk sampler result:
+  - requests: 2000;
+  - service errors: 0;
+  - legal policy candidate rows: 6250;
+  - positions with at least one legal candidate: 1679/2000;
+  - positions with no legal candidates: 321/2000;
+  - candidate count distribution: 0:321, 1:124, 2:200, 3:319, 4:412, 5:623, 6:1.
+- Combined candidate input:
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_candidates.jsonl` (ignored);
+  - rows: 10433 policy candidate rows;
+  - source chunks:
+    - first 1300 run18 positions: 4183 rows;
+    - offset 1300/2000 chunk: 6250 rows.
+- Built a larger Stockfish-labeled runtime ranker dataset:
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_ranker.jsonl` (ignored);
+  - evaluation cache:
+    `data/finetune/runtime_qwen35_9b_run18_3300_eval_cache.jsonl` (ignored);
+  - command included `--run-id 18`, so the ranker covers all 6130 unique run18 positions, not
+    only the 3300 sampled candidate positions;
+  - rows: 23452;
+  - positions: 6130;
+  - source counts: 8975 `policy_sample`, 5523 `arena_move`, 700 `arena_blunder`,
+    4183 `stockfish_good`, 4071 `random_legal`;
+  - risk counts: 8352 good, 6498 playable, 2962 mistake, 5640 blunder.
+- Ranker analysis:
+  - positions with Qwen policy candidates: 2731/6130;
+  - mixed safe/unsafe positions: 4051/6130;
+  - arena final mean CPL: 83.55;
+  - first generator candidate mean CPL: 279.52 on 2731 positions;
+  - oracle candidate mean CPL: 11.17;
+  - oracle gain vs first generator: 273.09 CPL on 2731 positions;
+  - oracle gain vs arena final: 72.27 CPL on 6130 positions.
+- Built the larger pairwise dataset:
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_pairwise.jsonl` (ignored);
+  - rows: 11145 safe-vs-unsafe pairwise examples;
+  - positions with pairs: 4046/6130;
+  - split: 8912 train, 1056 validation, 1177 test;
+  - pair risks: 4746 blunder/good, 2820 blunder/playable, 3015 good/mistake,
+    564 mistake/playable;
+  - target prompt index remained balanced: 5547 at index 1, 5598 at index 2.
+- Baseline evaluation on the larger validation split:
+  - adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_lora/checkpoint-400`;
+  - full validation: 725/1056 top-1, 68.66%, with 100% parse/legal;
+  - first 300 validation examples: 203/300 top-1, 67.67%, with 100% parse/legal.
+- Trained a continuation adapter from the same staged checkpoint:
+  - train data:
+    `data/finetune/runtime_qwen35_9b_run18_3300_pairwise.train.jsonl`;
+  - initial adapter:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_lora/checkpoint-400`;
+  - output:
+    `outputs/finetune/critic_pairwise_qwen25_15b_policy1k1200_runtime1300_then_run18_3300_600_lora`;
+  - train rows: 8912;
+  - max steps: 600;
+  - save steps: 200;
+  - learning rate: 5e-5;
+  - train runtime: 515.5 seconds;
+  - train loss: 0.04987.
+- Quick validation sweep on the first 300 validation examples:
+  - checkpoint 200: 182/300 top-1, 60.67%, with 100% parse/legal;
+  - checkpoint 400: 194/300 top-1, 64.67%, with 100% parse/legal;
+  - checkpoint 600: 196/300 top-1, 65.33%, with 100% parse/legal;
+  - baseline staged400 on the same 300 examples: 203/300 top-1, 67.67%.
+- Interpretation:
+  - The larger runtime dataset is valuable: it confirms a large oracle gap and gives a much larger
+    held-out runtime split for future selector work.
+  - The simple continuation training did not improve the selector; it regressed even on the
+    same-prefix 300-example validation check.
+  - Do not export or arena-test the 600-step continuation adapter.
+  - The likely issue is not lack of rows alone. The broader ranker includes all run18 accepted,
+    Stockfish, and random rows, while the pairwise task still rewards only binary safe-vs-unsafe
+    choices. The next useful training change should filter more tightly to actual Qwen
+    `policy_sample` candidates, or switch to a listwise target that directly learns to choose the
+    best move from a generated candidate set.
