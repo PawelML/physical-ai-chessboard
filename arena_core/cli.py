@@ -31,6 +31,7 @@ from arena_core.reranker import (
     inner_source_name,
     is_reranked_source_name,
 )
+from arena_core.risk_logprob_scorer import RiskLogprobScorer, RiskLogprobScorerConfig
 from arena_core.tournaments import TournamentConfig, TournamentResult, run_tournament
 
 app = typer.Typer(no_args_is_help=True)
@@ -385,27 +386,12 @@ def _source_from_name(
         inner_name = inner_source_name(name)
         if inner_name in {"random", "stockfish"}:
             raise ValueError("reranked:<source> requires an LLM model source")
-        if settings.reranker_scorer != "stockfish":
-            raise ValueError("only ARENA_RERANKER_SCORER=stockfish is implemented")
-        if settings.stockfish_path is None:
-            raise ValueError(
-                "reranked:<model> with stockfish scorer requires --stockfish-path "
-                "or ARENA_STOCKFISH_PATH"
-            )
         reranker_settings = settings.model_copy(
             update={"ollama_temperature": settings.reranker_temperature}
         )
         model, service = llm_service_for(inner_name, reranker_settings)
         inner = LLMMoveSource(model=model, service=service)
-        scorer = StockfishVetoScorer(
-            evaluator=StockfishEvaluator(
-                binary_path=settings.stockfish_path,
-                nodes=settings.reranker_veto_nodes,
-                threads=settings.stockfish_threads,
-                hash_mb=settings.stockfish_hash_mb,
-            ),
-            veto_cpl_threshold=settings.reranker_veto_cpl_threshold,
-        )
+        scorer = _reranker_scorer(settings)
         return RerankedLLMMoveSource(
             inner=inner,
             scorer=scorer,
@@ -431,6 +417,38 @@ def _source_from_name(
         )
     model, service = llm_service_for(name, settings)
     return LLMMoveSource(model=model, service=service)
+
+
+def _reranker_scorer(settings: Settings) -> StockfishVetoScorer | RiskLogprobScorer:
+    if settings.reranker_scorer == "stockfish":
+        if settings.stockfish_path is None:
+            raise ValueError(
+                "reranked:<model> with stockfish scorer requires --stockfish-path "
+                "or ARENA_STOCKFISH_PATH"
+            )
+        return StockfishVetoScorer(
+            evaluator=StockfishEvaluator(
+                binary_path=settings.stockfish_path,
+                nodes=settings.reranker_veto_nodes,
+                threads=settings.stockfish_threads,
+                hash_mb=settings.stockfish_hash_mb,
+            ),
+            veto_cpl_threshold=settings.reranker_veto_cpl_threshold,
+        )
+    if settings.reranker_scorer == "risk_logprob":
+        if settings.reranker_risk_logprob_adapter_dir is None:
+            raise ValueError(
+                "reranked:<model> with risk_logprob scorer requires "
+                "ARENA_RERANKER_RISK_LOGPROB_ADAPTER_DIR"
+            )
+        return RiskLogprobScorer(
+            RiskLogprobScorerConfig(
+                adapter_dir=settings.reranker_risk_logprob_adapter_dir,
+                max_seq_length=settings.reranker_risk_logprob_max_seq_length,
+                min_safe_score=settings.reranker_risk_logprob_min_safe_score,
+            )
+        )
+    raise ValueError("ARENA_RERANKER_SCORER must be one of: stockfish, risk_logprob")
 
 
 def _deliberation_config(settings: Settings) -> DeliberationConfig:

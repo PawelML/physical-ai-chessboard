@@ -27,6 +27,8 @@ class CandidateScore:
     centipawn_loss: int | None
     classification: str
     vetoed: bool
+    ranking_score: float | None = None
+    details: dict[str, Any] | None = None
 
 
 class RerankerScorer(Protocol):
@@ -269,6 +271,8 @@ def build_reranker_metadata(
                 "centipawn_loss": candidate.score.centipawn_loss,
                 "classification": candidate.score.classification,
                 "vetoed": candidate.score.vetoed,
+                "ranking_score": candidate.score.ranking_score,
+                "details": candidate.score.details,
             }
             for candidate in scored_candidates
         ],
@@ -303,9 +307,11 @@ def _least_bad_selection_key(candidate: ScoredCandidate) -> tuple[int, int]:
     )
 
 
-def _cpl_sort_value(candidate: ScoredCandidate) -> int:
+def _cpl_sort_value(candidate: ScoredCandidate) -> float:
     if candidate.score.centipawn_loss is not None:
         return candidate.score.centipawn_loss
+    if candidate.score.ranking_score is not None:
+        return -candidate.score.ranking_score
     if candidate.score.vetoed:
         return 1_000_000
     return 0

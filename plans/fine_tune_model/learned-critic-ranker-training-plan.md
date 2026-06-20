@@ -2391,3 +2391,90 @@ training run.
     method, initially behind an explicit experimental scorer name and with a tiny arena smoke only.
   - Before spending a 20-game benchmark budget, add runtime metadata for predicted risk
     probabilities/expected score so failures can be diagnosed without rerunning GPU inference.
+
+2026-06-20 experimental risk-logprob runtime scorer:
+
+- Added an experimental learned reranker scorer:
+  - scorer name: `risk_logprob`;
+  - module: `arena_core/risk_logprob_scorer.py`;
+  - runtime selection:
+    `ARENA_RERANKER_SCORER=risk_logprob`;
+  - required adapter path:
+    `ARENA_RERANKER_RISK_LOGPROB_ADAPTER_DIR=...`;
+  - optional settings:
+    - `ARENA_RERANKER_RISK_LOGPROB_MAX_SEQ_LENGTH`, default 1024;
+    - `ARENA_RERANKER_RISK_LOGPROB_MIN_SAFE_SCORE`, default 1.0.
+- The scorer reuses the individual critic prompt shape and scores risk labels by log probability
+  after the JSON prefix `{"risk":"`, then ranks candidates by expected risk score.
+- Extended reranker candidate metadata with:
+  - `ranking_score`;
+  - scorer-specific `details`, currently `risk_probs`, `risk_logprobs`, and `min_safe_score`.
+- Extended candidate selection so learned scorers without Stockfish CPL can still rank candidates:
+  - when `centipawn_loss` is present, existing CPL sorting is unchanged;
+  - otherwise, `ranking_score` is used, higher is better;
+  - veto behavior remains available through scorer-provided `vetoed`.
+- Validation:
+  - `ruff check arena_core finetune tests`: pass;
+  - `pytest -q tests/test_reranker.py tests/test_risk_logprob_scorer.py tests/test_evaluate_critic_risk_logprobs.py`:
+    11 passed.
+- Tiny runtime smoke:
+  - command shape:
+    `arena play reranked:qwen3.5:9b stockfish --max-plies 2`;
+  - database: `arena-risk-logprob-smoke.db` (ignored);
+  - model scorer adapter:
+    `outputs/finetune/critic_ranker_qwen25_15b_balanced_then_runtime_policy_only_run18_3300_400_lora/checkpoint-400`;
+  - `ARENA_RERANKER_N_CANDIDATES=2`;
+  - `ARENA_RERANKER_TEMPERATURE=0.7`;
+  - `ARENA_RERANKER_RISK_LOGPROB_MIN_SAFE_SCORE=2.0`;
+  - result: `1. e4 c5 *`, stopped by `max_plies`;
+  - model move legal: 1/1;
+  - model accepted move: `e2e4`;
+  - Stockfish evaluation of accepted move: `best`, CPL 6;
+  - reranker latency for the model ply: 7362.7 ms after model load;
+  - generated candidates: 2;
+  - distinct legal candidates: 1;
+  - selected move changed: no;
+  - scorer classification for `e2e4`: `blunder`;
+  - expected risk score: 1.145;
+  - all candidates vetoed under the default 2.0 threshold.
+- Interpretation:
+  - The runtime path is mechanically working and records enough metadata to debug failures.
+  - `min_safe_score=2.0` is too conservative for this checkpoint or the raw risk probabilities need
+    calibration before this can be trusted in arena play: it vetoed an opening move later evaluated
+    as best by Stockfish.
+  - Do not run a 20-game benchmark yet. The next useful step is calibration on held-out
+    policy-only rows and/or a threshold sweep using saved risk-logprob predictions, then a tiny
+    smoke with the calibrated threshold.
+
+2026-06-20 risk-logprob calibration check:
+
+- Saved prediction distribution for checkpoint 400:
+  - validation: expected risk score range 0.971-1.208, mean 1.108, stdev 0.047;
+  - validation predicted risk labels: 800 `blunder`, 14 `playable`;
+  - test: expected risk score range 0.984-1.208, mean 1.109, stdev 0.046;
+  - test predicted risk labels: 958 `blunder`, 17 `playable`.
+- The rank signal still helps offline despite poor absolute calibration:
+  - validation: first generator 293.72 CPL / 98 blunders, selected 235.36 CPL / 70 blunders;
+  - test: first generator 287.88 CPL / 114 blunders, selected 267.19 CPL / 101 blunders.
+- The absolute risk labels are not reliable yet:
+  - the classifier mostly calls candidates `blunder`;
+  - a 2.0 safety threshold marks nearly all positions as all-vetoed;
+  - threshold sweeps on the saved rows do not change offline selection because fallback and safe
+    selection both choose the highest expected risk score when candidate multiplicity is not
+    represented.
+- Runtime default changed to `min_safe_score=1.0`:
+  - this is a pragmatic calibrated default for this checkpoint's score distribution;
+  - it prevents the tiny smoke opening move `e2e4` score 1.145 from being vetoed;
+  - the scorer remains experimental and should still be validated by short arena runs before any
+    20-game benchmark.
+- Follow-up tiny runtime smoke with the calibrated default:
+  - command shape:
+    `arena play reranked:qwen3.5:9b stockfish --max-plies 2`;
+  - database: `arena-risk-logprob-smoke-threshold1.db` (ignored);
+  - result: `1. e4 c5 *`, stopped by `max_plies`;
+  - accepted model move: `e2e4`;
+  - scorer classification for `e2e4`: `blunder`;
+  - expected risk score: 1.145;
+  - `min_safe_score`: 1.0;
+  - `n_vetoed`: 0;
+  - `all_vetoed`: false.

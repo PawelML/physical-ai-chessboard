@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     reranker_veto_cpl_threshold: int = Field(default=300, ge=0)
     reranker_veto_nodes: int = Field(default=50_000, gt=0)
     reranker_scorer: str = "stockfish"
+    reranker_risk_logprob_adapter_dir: str | None = None
+    reranker_risk_logprob_max_seq_length: int = Field(default=1024, gt=0)
+    reranker_risk_logprob_min_safe_score: float = Field(default=1.0, ge=0.0, le=3.0)
     deliberation_mode: str = "revise"
     deliberation_n_candidates: int = Field(default=5, ge=1, le=16)
     deliberation_candidate_temperature: float = Field(default=0.7, ge=0.0)

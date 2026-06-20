@@ -133,6 +133,44 @@ def test_select_candidate_falls_back_to_lowest_cpl_when_all_vetoed() -> None:
     assert selection.all_vetoed is True
 
 
+def test_select_candidate_uses_learned_ranking_score_without_cpl() -> None:
+    board = chess.Board()
+    legal = collect_legal_candidates(
+        board=board,
+        raw_responses=[
+            '{"move":"e2e4"}',
+            '{"move":"d2d4"}',
+        ],
+    )
+    by_uci = {candidate.uci: candidate for candidate in legal}
+
+    selection = select_candidate(
+        [
+            ScoredCandidate(
+                candidate=by_uci["e2e4"],
+                score=CandidateScore(
+                    centipawn_loss=None,
+                    classification="playable",
+                    vetoed=False,
+                    ranking_score=2.1,
+                ),
+            ),
+            ScoredCandidate(
+                candidate=by_uci["d2d4"],
+                score=CandidateScore(
+                    centipawn_loss=None,
+                    classification="good",
+                    vetoed=False,
+                    ranking_score=2.8,
+                ),
+            ),
+        ]
+    )
+
+    assert selection.chosen is not None
+    assert selection.chosen.candidate.uci == "d2d4"
+
+
 @pytest.mark.asyncio
 async def test_reranker_returns_first_raw_response_when_no_legal_candidate() -> None:
     source = FakeCandidateSource(["not json", '{"move":"e2e5"}'])
@@ -184,6 +222,9 @@ async def test_reranker_returns_chosen_move_and_metadata() -> None:
     assert proposal.metadata["n_vetoed"] == 1
     assert proposal.metadata["veto_changed_move"] is True
     assert proposal.metadata["chosen_multiplicity"] == 2
+    by_candidate = {candidate["uci"]: candidate for candidate in proposal.metadata["candidates"]}
+    assert by_candidate["d2d4"]["ranking_score"] is None
+    assert by_candidate["d2d4"]["details"] is None
 
 
 def test_engine_evaluation_threshold_labels_blunder_and_mate_vetoes() -> None:
