@@ -98,11 +98,13 @@ class RerankedLLMMoveSource:
         scorer: RerankerScorer,
         config: RerankerConfig | None = None,
         temperature: float | None = None,
+        close_scorer: bool = True,
     ) -> None:
         self.inner = inner
         self.scorer = scorer
         self.config = config or RerankerConfig()
         self.temperature = temperature
+        self._close_scorer = close_scorer
         self.name = f"reranked:{inner.name}"
 
     async def propose(self, *, prompt: str, board: chess.Board) -> MoveProposal:
@@ -161,7 +163,8 @@ class RerankedLLMMoveSource:
 
     def close(self) -> None:
         close_if_present(self.inner)
-        close_if_present(self.scorer)
+        if self._close_scorer:
+            close_if_present(self.scorer)
 
 
 def is_reranked_source_name(name: str) -> bool:

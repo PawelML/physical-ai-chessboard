@@ -27,12 +27,14 @@ from arena_core.reports import export_game_report
 from arena_core.reranker import (
     RerankedLLMMoveSource,
     RerankerConfig,
+    RerankerScorer,
     StockfishVetoScorer,
     inner_source_name,
     is_reranked_source_name,
 )
 from arena_core.risk_logprob_scorer import RiskLogprobScorer, RiskLogprobScorerConfig
 from arena_core.tournaments import TournamentConfig, TournamentResult, run_tournament
+from arena_core.utils import close_if_present
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -300,29 +302,51 @@ async def _tournament_async(
         if effective_stockfish_path
         else None
     )
+    cached_reranker_scorers: dict[str, RerankerScorer] = {}
+
+    def source_factory(source_name: str, rng: random.Random) -> MoveSource:
+        cached_scorer: RerankerScorer | None = None
+        close_reranker_scorer = True
+        if (
+            is_reranked_source_name(source_name)
+            and effective_settings.reranker_scorer == "risk_logprob"
+        ):
+            cached_scorer = cached_reranker_scorers.get("risk_logprob")
+            if cached_scorer is None:
+                cached_scorer = _reranker_scorer(effective_settings)
+                cached_reranker_scorers["risk_logprob"] = cached_scorer
+            close_reranker_scorer = False
+        return _source_from_name(
+            source_name,
+            effective_settings,
+            rng=rng,
+            reranker_scorer=cached_scorer,
+            close_reranker_scorer=close_reranker_scorer,
+        )
+
     async with session_factory() as session:
-        async with session.begin():
-            result = await run_tournament(
-                session=session,
-                config=TournamentConfig(
-                    name=name,
-                    competitor_a=competitor_a,
-                    competitor_b=competitor_b,
-                    legality_mode=cast("LegalityMode", legality_mode),
-                    max_plies=max_plies,
-                    game_count=game_count,
-                    seed=seed,
-                ),
-                settings=effective_settings,
-                source_factory=lambda source_name, rng: _source_from_name(
-                    source_name,
-                    effective_settings,
-                    rng=rng,
-                ),
-                evaluator=evaluator,
-            )
-            await rebuild_game_summaries(session, run_id=result.run_id)
-            return result
+        try:
+            async with session.begin():
+                result = await run_tournament(
+                    session=session,
+                    config=TournamentConfig(
+                        name=name,
+                        competitor_a=competitor_a,
+                        competitor_b=competitor_b,
+                        legality_mode=cast("LegalityMode", legality_mode),
+                        max_plies=max_plies,
+                        game_count=game_count,
+                        seed=seed,
+                    ),
+                    settings=effective_settings,
+                    source_factory=source_factory,
+                    evaluator=evaluator,
+                )
+                await rebuild_game_summaries(session, run_id=result.run_id)
+                return result
+        finally:
+            for scorer in cached_reranker_scorers.values():
+                close_if_present(scorer)
 
 
 async def _rebuild_summaries_async(db_url: str, run_id: int | None) -> int:
@@ -363,6 +387,8 @@ def _source_from_name(
     settings: Settings,
     *,
     rng: random.Random | None = None,
+    reranker_scorer: RerankerScorer | None = None,
+    close_reranker_scorer: bool = True,
 ) -> MoveSource:
     if is_deliberative_source_name(name):
         inner_name = deliberative_inner_source_name(name)
@@ -391,7 +417,7 @@ def _source_from_name(
         )
         model, service = llm_service_for(inner_name, reranker_settings)
         inner = LLMMoveSource(model=model, service=service)
-        scorer = _reranker_scorer(settings)
+        scorer = reranker_scorer or _reranker_scorer(settings)
         return RerankedLLMMoveSource(
             inner=inner,
             scorer=scorer,
@@ -400,6 +426,7 @@ def _source_from_name(
                 veto_cpl_threshold=settings.reranker_veto_cpl_threshold,
             ),
             temperature=settings.reranker_temperature,
+            close_scorer=close_reranker_scorer,
         )
     if name == "random":
         return RandomMoveSource(rng=rng)

@@ -33,9 +33,13 @@ class FakeScorer:
 
     def __init__(self, scores: dict[str, CandidateScore]) -> None:
         self._scores = scores
+        self.closed = False
 
     async def score(self, *, board: chess.Board, move: chess.Move) -> CandidateScore:
         return self._scores[move.uci()]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_collect_legal_candidates_deduplicates_and_counts_multiplicity() -> None:
@@ -225,6 +229,31 @@ async def test_reranker_returns_chosen_move_and_metadata() -> None:
     by_candidate = {candidate["uci"]: candidate for candidate in proposal.metadata["candidates"]}
     assert by_candidate["d2d4"]["ranking_score"] is None
     assert by_candidate["d2d4"]["details"] is None
+
+
+def test_reranker_can_leave_externally_owned_scorer_open() -> None:
+    scorer = FakeScorer({})
+    reranker = RerankedLLMMoveSource(
+        inner=FakeCandidateSource([]),
+        scorer=scorer,
+        close_scorer=False,
+    )
+
+    reranker.close()
+
+    assert scorer.closed is False
+
+
+def test_reranker_closes_owned_scorer_by_default() -> None:
+    scorer = FakeScorer({})
+    reranker = RerankedLLMMoveSource(
+        inner=FakeCandidateSource([]),
+        scorer=scorer,
+    )
+
+    reranker.close()
+
+    assert scorer.closed is True
 
 
 def test_engine_evaluation_threshold_labels_blunder_and_mate_vetoes() -> None:
