@@ -1845,3 +1845,47 @@ training run.
   - Next best move is to scale the same process to at least 2k-5k sampled positions and combine
     runtime pairs with the stronger older mixed pairwise set, then evaluate composed
     multi-candidate selection before another arena benchmark.
+
+2026-06-20 mixed old-plus-runtime pairwise training probe:
+
+- Built a naive mixed train set by concatenating:
+  - `data/finetune/critic_pairwise_large_mixed_plus_policy1k.train.jsonl`;
+  - `data/finetune/runtime_qwen35_9b_run18_1300_pairwise.train.jsonl`.
+- Mixed train set:
+  - path: `data/finetune/critic_pairwise_large_mixed_plus_runtime_run18_1300.train.jsonl`
+    (ignored);
+  - rows: 14490 total;
+  - old offline+policy1k rows: 12009;
+  - runtime run18 rows: 2481;
+  - pair risks: 5757 blunder/good, 4437 blunder/playable, 3186 good/mistake,
+    1110 mistake/playable;
+  - target prompt index remained balanced: 7282 at index 1, 7208 at index 2.
+- Trained adapter:
+  - adapter: `outputs/finetune/critic_pairwise_qwen25_15b_large_mixed_plus_runtime_run18_1300_1200_lora`;
+  - base: `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit`;
+  - train rows: 14490;
+  - steps: 1200;
+  - train runtime: 1044 seconds;
+  - train loss: 0.0569.
+- Runtime validation/test evaluation:
+  - runtime validation: 172/269 top-1, 63.94%, with 100% parse/legal;
+  - runtime test: 252/345 top-1, 73.04%, with 100% parse/legal.
+- Frozen old validation evaluation:
+  - source: `data/finetune/critic_pairwise_large_mixed_plus_policy1k.validation.jsonl`;
+  - old validation: 1038/1523 top-1, 68.15%, with 100% parse/legal.
+- Comparison:
+  - previous offline+policy1k adapter on runtime validation/test: 63.20% / 76.23%;
+  - runtime-only 400-step adapter on runtime validation/test: 66.54% / 77.39%;
+  - previous offline+policy1k adapter on old validation: 69.47%.
+- Interpretation:
+  - Naively concatenating the small runtime set into the larger older set did not help.
+  - It slightly improved runtime validation over the old adapter, but regressed runtime test,
+    runtime-only test, and old validation.
+  - Do not export this adapter and do not spend arena games on it.
+  - The likely failure mode is gradient dilution plus distribution conflict: 2481 runtime rows are
+    too small relative to 12009 older rows, while the runtime rows are exactly where the transfer
+    signal matters.
+  - Next useful experiment should be either:
+    - collect a larger runtime set before mixing, at least 2k-5k positions and preferably 10k;
+    - or train in stages: start from the old 1200-step adapter, continue only on runtime pairs with
+      checkpoint selection against runtime validation/test and old validation.
