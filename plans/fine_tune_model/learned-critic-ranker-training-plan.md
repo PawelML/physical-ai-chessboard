@@ -2152,3 +2152,79 @@ training run.
     choices. The next useful training change should filter more tightly to actual Qwen
     `policy_sample` candidates, or switch to a listwise target that directly learns to choose the
     best move from a generated candidate set.
+
+2026-06-20 policy-only listwise runtime probe:
+
+- Built a Qwen-policy-only ranker subset from the larger run18 ranker:
+  - input: `data/finetune/runtime_qwen35_9b_run18_3300_ranker.jsonl` (ignored);
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_ranker.jsonl`
+    (ignored);
+  - retained only `source == "policy_sample"`;
+  - rows: 8975;
+  - positions with policy candidates: 2731.
+- Built a policy-only position-level choice/listwise dataset:
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_choice.jsonl`
+    (ignored);
+  - metadata:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_choice.meta.json`
+    (ignored);
+  - min candidates: 2;
+  - max candidates: 6;
+  - required mixed safe/unsafe risks;
+  - rows: 1125 choice positions from 2731 policy-candidate positions;
+  - split: 915 train, 111 validation, 99 test;
+  - candidate count distribution: 119 with 2, 260 with 3, 639 with 4, 107 with 5;
+  - target risks: 448 good, 677 playable;
+  - dropped positions: 244 too few candidates, 1362 no mixed risk;
+  - first prompt candidate mean CPL: 212.02 over the full choice dataset;
+  - oracle target mean CPL: 63.43;
+  - oracle gain over first prompt candidate: 148.59 CPL.
+- Baseline transfer check with the previous direct choice adapter:
+  - adapter: `outputs/finetune/critic_choice_qwen25_15b_large_mixed_policy1k_800_lora`;
+  - validation rows: 111;
+  - parse/legal/candidate rates: 100%;
+  - top-1 oracle match: 27/111, 24.32%;
+  - selected mean CPL: 244.48;
+  - validation first prompt candidate mean CPL: 172.89;
+  - validation oracle mean CPL: 57.70;
+  - selected high-risk moves: 65/111;
+  - selected blunders: 38/111;
+  - improved vs first candidate: 32;
+  - worsened vs first candidate: 37.
+- Trained a short policy-only listwise continuation:
+  - train data:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_choice.train.jsonl`;
+  - initial adapter:
+    `outputs/finetune/critic_choice_qwen25_15b_large_mixed_policy1k_800_lora`;
+  - output:
+    `outputs/finetune/critic_choice_qwen25_15b_policy1k800_then_runtime_policy_only_run18_3300_400_lora`;
+  - train rows: 915;
+  - max steps: 400;
+  - save steps: 100;
+  - learning rate: 5e-5;
+  - train runtime: 346.2 seconds;
+  - train loss: 0.1097.
+- Full validation sweep on the 111-row policy-only choice validation split:
+
+  | Model | Top-1 | Selected mean CPL | Regret vs oracle | High-risk selected | Blunders selected |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | Baseline choice 800 | 24.32% | 244.48 | 186.41 | 65 | 38 |
+  | Runtime choice ckpt100 | 24.32% | 255.53 | 197.45 | 66 | 40 |
+  | Runtime choice ckpt200 | 23.42% | 260.75 | 202.14 | 70 | 43 |
+  | Runtime choice ckpt300 | 24.32% | 254.70 | 196.10 | 67 | 41 |
+  | Runtime choice ckpt400 | 25.23% | 253.60 | 195.00 | 68 | 41 |
+
+- Interpretation:
+  - Direct listwise continuation on 915 runtime-policy examples did not improve useful move
+    quality. The tiny top-1 gain at checkpoint 400 is not actionable because selected CPL and
+    blunder count both regress against the baseline adapter and are also much worse than simply
+    keeping the first visible candidate.
+  - Do not export or arena-test this listwise adapter.
+  - The failure is not JSON formatting or candidate legality: all models stayed at 100%
+    parse/legal/candidate rates. The failure is ranking quality.
+  - The current direct-choice SFT format appears too weak for this selector. The next serious
+    iteration should either:
+    - train a scorer/reward head that scores each candidate independently and ranks by numeric
+      score, avoiding generative list-choice bias; or
+    - return to pairwise but build pairs only from actual `policy_sample` candidates and evaluate
+      composed ranking on the policy-only choice validation/test splits before any arena smoke.
