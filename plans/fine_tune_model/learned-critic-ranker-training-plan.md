@@ -2334,3 +2334,60 @@ training run.
     train split, then evaluate with this logprob scorer. This is more promising than direct
     list-choice or pairwise generation, but it still needs a much stronger offline gate before
     export or arena smoke.
+
+2026-06-20 policy-only individual ranker continuation:
+
+- Trained a short continuation of the best previous individual ranker on the policy-only runtime
+  train split:
+  - train data:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_ranker.train.jsonl`
+    (ignored);
+  - initial adapter: `outputs/finetune/critic_ranker_qwen25_15b_balanced_lora`;
+  - output:
+    `outputs/finetune/critic_ranker_qwen25_15b_balanced_then_runtime_policy_only_run18_3300_400_lora`
+    (ignored);
+  - train rows: 7186;
+  - max steps: 400;
+  - save steps: 100;
+  - learning rate: 5e-5;
+  - batch size: 2;
+  - gradient accumulation: 4;
+  - train runtime: 359.2 seconds;
+  - train loss: 0.1585.
+- Full validation sweep with the risk-logprob scorer on the 814-row / 251-position policy-only
+  validation split:
+
+  | Model | Risk match | Blunder match | Selected mean CPL | Selected blunders | Oracle match | Improved / worsened / tied vs first |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | Balanced baseline | 33.05% | 43.37% | 258.21 | 87 | 101 | 74 / 59 / 75 |
+  | Runtime ckpt100 | 36.12% | 36.36% | 277.74 | 91 | 96 | 64 / 58 / 85 |
+  | Runtime ckpt200 | 31.70% | 46.81% | 261.66 | 85 | 88 | 74 / 71 / 64 |
+  | Runtime ckpt300 | 37.10% | 39.31% | 268.43 | 87 | 93 | 64 / 60 / 83 |
+  | Runtime ckpt400 | 36.86% | 37.47% | 235.36 | 70 | 99 | 80 / 59 / 69 |
+
+- Validation interpretation:
+  - checkpoint 400 is the first learned runtime-distribution selector in this batch with a clear
+    useful offline gain over both first-candidate and previous balanced ranker;
+  - vs balanced baseline it improves selected mean CPL by 22.85 and selected blunders by 17;
+  - vs first generator on the same validation split it improves selected mean CPL by 58.36 and
+    selected blunders by 28.
+- Held-out policy-only test check, comparing only balanced baseline and checkpoint 400:
+
+  | Model | Risk match | Blunder match | First mean CPL | Selected mean CPL | Oracle mean CPL | First blunders | Selected blunders | Oracle blunders | Oracle match | Improved / worsened / tied vs first |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | Balanced baseline | 35.90% | 46.46% | 287.88 | 278.91 | 191.49 | 114 | 124 | 68 | 105 | 66 / 83 / 89 |
+  | Runtime ckpt400 | 40.00% | 40.51% | 287.88 | 267.19 | 191.49 | 114 | 101 | 68 | 112 | 67 / 86 / 86 |
+
+- Test interpretation:
+  - checkpoint 400 also generalizes to the held-out test split: selected mean CPL improves by 20.69
+    vs first generator and 11.72 vs balanced baseline;
+  - selected blunders improve by 13 vs first generator and 23 vs balanced baseline;
+  - the selected mean CPL is still far from oracle 191.49, and the worsened-vs-first count remains
+    high, so this should not yet be exported blindly into arena runtime.
+- Decision:
+  - This direction is promising enough to continue, unlike the direct choice and pairwise
+    generative selectors.
+  - The next implementation step should be a runtime `RerankerScorer` backed by this risk-logprob
+    method, initially behind an explicit experimental scorer name and with a tiny arena smoke only.
+  - Before spending a 20-game benchmark budget, add runtime metadata for predicted risk
+    probabilities/expected score so failures can be diagnosed without rerunning GPU inference.
