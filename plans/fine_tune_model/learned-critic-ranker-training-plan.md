@@ -2515,3 +2515,54 @@ training run.
   - The current idea has therefore not failed yet.
   - Before a 20-game run, fix runtime efficiency: tournament currently reloads the Unsloth scorer
     between games, making the experimental scorer unnecessarily slow.
+
+2026-06-20 20-game runtime check and stop decision:
+
+- Runtime efficiency fix:
+  - added process-local reuse of the `risk_logprob` scorer across tournament games;
+  - `arena tournament` no longer reloads the Unsloth adapter between games for this scorer;
+  - validation:
+    - `ruff check arena_core finetune tests`: pass;
+    - `pytest -q tests/test_reranker.py tests/test_risk_logprob_scorer.py tests/test_tournaments.py`:
+      22 passed;
+    - 2-game cache smoke showed a single adapter load and completed games 1-2 in
+      `arena-risk-logprob-cache-smoke.db`.
+- 20-game benchmark database: `arena-risk-logprob-20g.db` (ignored generated artifact).
+- Baseline command shape:
+  `arena tournament qwen3.5:9b stockfish --game-count 20 --max-plies 30 --seed 20260620`.
+- Learned-reranker command shape:
+  `arena tournament reranked:qwen3.5:9b stockfish --game-count 20 --max-plies 30 --seed 20260620`.
+- Learned-reranker settings:
+  - `ARENA_RERANKER_SCORER=risk_logprob`;
+  - checkpoint:
+    `outputs/finetune/critic_ranker_qwen25_15b_balanced_then_runtime_policy_only_run18_3300_400_lora/checkpoint-400`;
+  - `ARENA_RERANKER_N_CANDIDATES=3`;
+  - `ARENA_RERANKER_TEMPERATURE=0.7`;
+  - `ARENA_RERANKER_RISK_LOGPROB_MIN_SAFE_SCORE=1.0`;
+  - `ARENA_OLLAMA_THINK=off`;
+  - `ARENA_OLLAMA_NUM_CTX=4096`.
+
+| Run | Games | Model moves | Evaluated moves | Avg CPL | Median CPL | Blunders | CPL > 300 | CPL > 1000 | Avg model move latency |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline `qwen3.5:9b` | 20 | 219 | 172 | 121.33 | 75.0 | 20 | 20 | 0 | 1210.4 ms |
+| `risk_logprob` reranked | 20 | 255 | 205 | 146.68 | 71.0 | 35 | 35 | 1 | 2987.9 ms |
+
+- Result distribution:
+  - baseline: 2 max-plies games, 13 checkmates, 5 forfeit-invalid games;
+  - `risk_logprob` reranked: 8 max-plies games, 12 checkmates, 0 forfeit-invalid games.
+- Attempt-level parsing/legal behavior:
+  - baseline: 446 accepted legal attempts, 231 illegal attempts without accepted move;
+  - `risk_logprob` reranked: 515 accepted legal attempts, 219 illegal attempts and 1 malformed
+    attempt without accepted move.
+- Reranker metadata on 255 model moves:
+  - selected move changed vs first legal candidate: 57;
+  - all-vetoed moves: 0;
+  - average legal sampled candidates including duplicates: 2.53;
+  - average distinct legal candidates: 1.65;
+  - chosen expected-risk-score range: 1.041-1.190, mean 1.126.
+- Decision:
+  - The 4-game positive sanity signal did not hold up.
+  - The 20-game runtime result is worse on average CPL, blunder count, large mistakes, and latency.
+  - This `risk_logprob` runtime reranker idea should be considered failed for now.
+  - Per the user's stop condition, stop active work on this line and do not spend more GPU time on
+    additional variants without a new plan or explicit restart.
