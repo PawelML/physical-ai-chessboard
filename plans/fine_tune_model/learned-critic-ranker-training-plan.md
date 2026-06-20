@@ -2279,3 +2279,58 @@ training run.
     different validation gate. The next useful implementation is a non-generative candidate scorer
     that can evaluate each candidate independently with a numeric/logit score, then rank the
     policy candidates directly.
+
+2026-06-20 risk-logprob individual scorer probe:
+
+- Added a non-generative evaluation path:
+  - script: `finetune/evaluate_critic_risk_logprobs.py`;
+  - tests: `tests/test_evaluate_critic_risk_logprobs.py`;
+  - method: for each candidate row, apply the critic prompt and score the four risk labels
+    `blunder`, `mistake`, `playable`, `good` by log probability after the shared JSON prefix
+    `{"risk":"`;
+  - candidate ranking uses expected risk score from the four label probabilities rather than
+    generated JSON.
+- Built split files for the policy-only ranker subset:
+  - train: 7186 rows / 2185 positions;
+  - validation: 814 rows / 251 positions;
+  - test: 975 rows / 295 positions.
+- Validation result with `outputs/finetune/critic_ranker_qwen25_15b_balanced_lora`:
+
+  | Metric | Value |
+  | --- | ---: |
+  | Candidate rows | 814 |
+  | Positions | 251 |
+  | Risk match | 269/814, 33.05% |
+  | Blunder binary match | 353/814, 43.37% |
+  | First generator mean CPL | 293.72 |
+  | Logprob-selected mean CPL | 258.21 |
+  | Oracle mean CPL | 166.61 |
+  | First generator blunders | 98 |
+  | Logprob-selected blunders | 87 |
+  | Oracle blunders | 46 |
+  | Oracle match by move | 101/251 |
+  | Improved/worsened/tied vs first | 74 / 59 / 75 |
+
+- Validation result with `outputs/finetune/critic_ranker_qwen25_15b_pilot_lora`:
+
+  | Metric | Value |
+  | --- | ---: |
+  | Risk match | 203/814, 24.94% |
+  | Blunder binary match | 522/814, 64.13% |
+  | Logprob-selected mean CPL | 303.63 |
+  | Logprob-selected blunders | 87 |
+  | Oracle match by move | 92/251 |
+  | Improved/worsened/tied vs first | 67 / 71 / 71 |
+
+- Interpretation:
+  - The balanced individual ranker is the first policy-only runtime-distribution probe in this
+    batch that improves mean CPL versus taking the first generated candidate, reducing validation
+    mean CPL by 35.51 and selected blunders by 11.
+  - The signal is still too weak for runtime integration: selected CPL 258.21 is far from oracle
+    166.61, risk match is only 33.05%, and 87 selected blunders over 251 positions is high.
+  - The pilot ranker is not useful as a runtime scorer despite better blunder binary match; its
+    ranking worsens mean CPL versus first candidate.
+  - Next training step should continue or retrain the individual ranker on the policy-only runtime
+    train split, then evaluate with this logprob scorer. This is more promising than direct
+    list-choice or pairwise generation, but it still needs a much stronger offline gate before
+    export or arena smoke.
