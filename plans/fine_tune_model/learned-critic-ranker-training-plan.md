@@ -2228,3 +2228,54 @@ training run.
       score, avoiding generative list-choice bias; or
     - return to pairwise but build pairs only from actual `policy_sample` candidates and evaluate
       composed ranking on the policy-only choice validation/test splits before any arena smoke.
+
+2026-06-20 policy-only pairwise transfer check:
+
+- Built a policy-only safe-vs-unsafe pairwise dataset from the same `policy_sample` ranker subset:
+  - input: `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_ranker.jsonl`
+    (ignored);
+  - output: `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_pairwise.jsonl`
+    (ignored);
+  - metadata:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_pairwise.meta.json`
+    (ignored);
+  - min CPL gap: 100;
+  - pairs per position: 4;
+  - rows: 2608;
+  - positions with pairs: 1047/2731;
+  - split: 2113 train, 253 validation, 242 test;
+  - pair risks: 463 blunder/good, 1208 blunder/playable, 411 good/mistake,
+    526 mistake/playable;
+  - target prompt index remained balanced: 1271 at index 1, 1337 at index 2.
+- Also built policy-only list expansion files for possible composed pairwise ranking:
+  - validation:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_choice.validation_pairwise_eval.jsonl`
+    (ignored), 575 pair rows from 111 choice rows;
+  - test:
+    `data/finetune/runtime_qwen35_9b_run18_3300_policy_only_choice.test_pairwise_eval.jsonl`
+    (ignored), 509 pair rows from 99 choice rows.
+- Evaluated existing pairwise adapters on the 253-row policy-only pairwise validation split:
+
+  | Adapter | Parse/legal | Top-1 |
+  | --- | ---: | ---: |
+  | `critic_pairwise_qwen25_15b_large_mixed_policy1k_1200_lora` | 100% / 100% | 120/253, 47.43% |
+  | `critic_pairwise_qwen25_15b_policy1k1200_then_runtime_run18_1300_400_lora/checkpoint-400` | 100% / 100% | 122/253, 48.22% |
+  | `critic_pairwise_qwen25_15b_policy1k1200_runtime1300_then_run18_3300_600_lora/checkpoint-600` | 100% / 100% | 117/253, 46.25% |
+
+- Error shape:
+  - all three adapters stayed at 100% candidate-ok;
+  - prompt-index choice was roughly balanced, so this is not just a first/second-candidate bias;
+  - selected risk counts stayed poor, for example staged runtime400 selected 85 blunders and
+    46 mistakes out of 253 validation pairs;
+  - staged runtime400 selected blunder in 56 `playable->blunder` cases and 29 `good->blunder`
+    cases.
+- Interpretation:
+  - This is the strongest explanation so far for the bad runtime smokes: the pairwise critic does
+    not transfer to the true `policy_sample` candidate-pair distribution, even though it formats
+    output perfectly.
+  - Do not run composed pairwise ranking or arena tests with these existing adapters on this
+    policy-only split; the base pair signal is below random.
+  - Do not train another small continuation in the same pairwise generative format without a
+    different validation gate. The next useful implementation is a non-generative candidate scorer
+    that can evaluate each candidate independently with a numeric/logit score, then rank the
+    policy candidates directly.
