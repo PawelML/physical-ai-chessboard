@@ -79,7 +79,7 @@ This repo demonstrates, end to end:
 - **Post-hoc persona commentary** and **per-game Markdown report export.**
 
 <p align="center">
-  <img src="docs/img/leaderboard.png" alt="Model comparison — per-metric benchmark table across models" width="100%">
+  <img src="docs/img/leaderboard.png?v=20260623" alt="Model comparison — per-metric benchmark table across models" width="100%">
 </p>
 
 > The leaderboard is deliberately **not** a single "best model" score. It is a filterable, multi-metric
